@@ -208,12 +208,12 @@ function pointInside(g, p) {
   return uniq.length % 2 === 1;
 }
 
-/** Same element tree branch (assembly and its parts, wall and its opening). */
+/** Same element tree branch (assembly and its parts) or a door/window and its host wall. */
 function related(m, a, b) {
   const isAncestor = (x, y) => {
     let p = m.elements[y].parent;
     while (p >= 0) { if (p === x) return true; p = m.elements[p].parent; }
     return false;
   };
-  return isAncestor(a, b) || isAncestor(b, a);
+  return m.elements[a].host === b || m.elements[b].host === a || isAncestor(a, b) || isAncestor(b, a);
 }

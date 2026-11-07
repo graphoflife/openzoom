@@ -102,15 +102,20 @@ export function testCondition(cond, v) {
   return testOne(cond, v);
 }
 
+// Element types that are only shown when a rule names them (or their Alt+S / Alt+O toggle is on).
+const HIDDEN_TYPES = ['IfcSpace', 'IfcOpeningElement', 'IfcFeatureElementSubtraction'];
+
 function makePredicate(rule) {
   const classes = zoomTypeToClasses(rule.ifcType);
   const prop = rule.property || {};
   const noProp = !prop.name && prop.type !== 'Material';
-  return (model, i, el) => {
+  const pred = (model, i, el) => {
     if (classes && !classes.some((c) => el.supers.includes(c))) return false;
     if (noProp) return true;
     return testCondition(rule.condition || {}, getValue(model, i, prop));
   };
+  pred.explicit = (el) => !!classes && classes.some((c) => HIDDEN_TYPES.includes(c) && el.supers.includes(c));
+  return pred;
 }
 
 const hiddenChild = (el) => el.cls === 'IfcSpace' || el.supers.includes('IfcOpeningElement');
@@ -140,6 +145,8 @@ export function evaluate(view, models, skipChild = hiddenChild) {
       for (let i = 0; i < m.count; i++) {
         if (hit[i]) continue;
         const el = m.elements[i];
+        // spaces/openings need a rule that names their type unless their toggle is on
+        if (skipChild(el) && !preds.some((p) => p.explicit(el))) continue;
         if (preds.every((p) => p(m, i, el))) for (const d of m.descendants(i, [], skipChild)) hit[d] = 1;
       }
       for (let i = 0; i < m.count; i++) {
@@ -204,8 +211,9 @@ export function ruleLabel(rule) {
   const p = rule.property || {};
   const c = rule.condition || {};
   const parts = [rule.ifcType && rule.ifcType !== 'Any' ? rule.ifcType : ''];
-  if (p.name) parts.push(p.name);
-  if (c.type && !(p.type === 'Summary' && p.name === 'Model' && c.type === 'StringIsDefined')) parts.push(t(`cond.${c.type}`));
+  const all = p.type === 'Summary' && p.name === 'Model' && c.type === 'StringIsDefined';
+  if (p.name && !all) parts.push(p.name);
+  if (c.type && !all) parts.push(t(`cond.${c.type}`));
   if (c.value && !NO_VALUE_CONDITIONS.has(c.type)) parts.push(c.value);
   return parts.filter(Boolean).join(' ') || 'Regel';
 }

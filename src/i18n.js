@@ -84,7 +84,7 @@ const de = {
   'issue.export21': 'BCF 2.1 exportieren', 'issue.export30': 'BCF 3.0 exportieren', 'issue.import': 'BCF importieren…', 'issue.author': 'Autor',
   'issue.show': 'Ansicht wiederherstellen', 'issue.created': 'Erstellt', 'issue.imported': '{n} Issues importiert',
 
-  'status.ready': 'Bereit', 'status.loading': 'Lade {name}…', 'status.parse': 'Lese IFC', 'status.geometry': 'Geometrie', 'status.properties': 'Eigenschaften', 'status.elements': 'Elemente',
+  'status.ready': 'Bereit', 'status.loading': 'Lade {name}…', 'status.parse': 'Lese IFC', 'status.geometry': 'Geometrie', 'status.properties': 'Eigenschaften', 'status.elements': 'Elemente', 'status.done': 'fertig',
   'status.selected': '{n} ausgewählt', 'status.elements_count': '{n} Elemente', 'status.clickSurfacePlane': 'Klicken Sie auf eine Fläche, um die Schnittebene zu platzieren (Esc = Abbrechen).',
   'status.dimension': 'Fläche klicken = lichter Abstand senkrecht · Shift+Klick = Punkt-zu-Punkt · Strg+Klick = Abstand zur Schnittebene',
   'status.distance': 'Ersten und zweiten Punkt klicken (Fang an Ecken/Kanten).', 'status.angle': 'Drei Punkte klicken: Schenkel, Scheitel, Schenkel.',
@@ -176,7 +176,7 @@ const en = {
   'issue.assigned': 'Assigned to', 'issue.due': 'Due', 'issue.labels': 'Labels (comma)', 'issue.comments': 'Comments', 'issue.addComment': 'Add comment',
   'issue.updateView': 'Update view', 'issue.delete': 'Delete issue', 'issue.none': 'No issues.', 'issue.export21': 'Export BCF 2.1', 'issue.export30': 'Export BCF 3.0',
   'issue.import': 'Import BCF…', 'issue.author': 'Author', 'issue.show': 'Restore view', 'issue.created': 'Created', 'issue.imported': '{n} issues imported',
-  'status.ready': 'Ready', 'status.loading': 'Loading {name}…', 'status.parse': 'Reading IFC', 'status.geometry': 'Geometry', 'status.properties': 'Properties', 'status.elements': 'Elements',
+  'status.ready': 'Ready', 'status.loading': 'Loading {name}…', 'status.parse': 'Reading IFC', 'status.geometry': 'Geometry', 'status.properties': 'Properties', 'status.elements': 'Elements', 'status.done': 'done',
   'status.selected': '{n} selected', 'status.elements_count': '{n} elements', 'status.clickSurfacePlane': 'Click a surface to place the section plane (Esc = cancel).',
   'status.dimension': 'Click surface = perpendicular clear distance · Shift+click = point to point · Ctrl+click = distance to section plane',
   'status.distance': 'Click first and second point (snaps to corners/edges).', 'status.angle': 'Click three points: leg, vertex, leg.',

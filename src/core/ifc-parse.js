@@ -433,9 +433,17 @@ function extractMeta(modelID, schema, units, eidOf, order, reqId) {
     const p = refId(r.RelatingStructure);
     for (const c of r.RelatedElements || []) if (!parent.has(refId(c))) parent.set(refId(c), p);
   }
+  const voidHost = new Map(); // opening -> host element
   for (const rid of ids(modelID, WebIFC.IFCRELVOIDSELEMENT)) {
     const r = L(rid); if (!r) continue;
     parent.set(refId(r.RelatedOpeningElement), refId(r.RelatingBuildingElement));
+    voidHost.set(refId(r.RelatedOpeningElement), refId(r.RelatingBuildingElement));
+  }
+  const fillHost = new Map(); // door/window -> wall whose opening it fills
+  for (const rid of ids(modelID, WebIFC.IFCRELFILLSELEMENT)) {
+    const r = L(rid); if (!r) continue;
+    const host = voidHost.get(refId(r.RelatingOpeningElement));
+    if (host !== undefined) fillHost.set(refId(r.RelatedBuildingElement), host);
   }
   if (WebIFC.IFCRELNESTS) {
     for (const rid of ids(modelID, WebIFC.IFCRELNESTS)) {
@@ -646,6 +654,7 @@ function extractMeta(modelID, schema, units, eidOf, order, reqId) {
       classes: classOf.get(id) || [],
       groups: groupsOf.get(id) || [],
       elevation: null,
+      host: fillHost.has(id) ? eidOf(fillHost.get(id)) : -1,
     };
     if (cls === 'IfcBuildingStorey' && line) {
       const ev = Number(val(line.Elevation));
