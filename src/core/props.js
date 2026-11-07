@@ -220,18 +220,97 @@ export function valueText(v) {
   return String(v);
 }
 
-/** Collect available property names (for editor dropdowns). */
-export function collectPropertyCatalog(models, limitPerModel = 20000) {
-  const sets = new Map(); // psetName -> Set(propName)
+const MAX_VALUES = 500;
+
+/**
+ * Union of every property found on any element of any model, grouped like the
+ * smart view property types. Each property records how many elements carry it,
+ * its inferred bcsv value type and the distinct values (capped) with counts.
+ * @returns {{groups: Array<{type, psetName, props: Array<{name, count, valueType, unit, values: Array<[string, number]>, more: boolean}>}>}}
+ */
+export function buildPropertyCatalog(models) {
+  const groups = new Map();
+  const add = (type, psetName, name, value, unit, n = 1) => {
+    if (!name) return;
+    const gk = `${type}|${psetName}`;
+    let g = groups.get(gk);
+    if (!g) groups.set(gk, (g = { type, psetName, props: new Map() }));
+    let p = g.props.get(name);
+    if (!p) g.props.set(name, (p = { name, count: 0, kinds: new Set(), unit: unit || '', values: new Map(), more: false }));
+    p.count += n;
+    if (value === undefined || value === null || value === '') return;
+    const vals = Array.isArray(value) ? value : [value];
+    for (const v of vals) {
+      p.kinds.add(v === 'UNKNOWN' ? 'logical' : typeof v);
+      const key = valueText(v);
+      if (p.values.has(key)) p.values.set(key, p.values.get(key) + n);
+      else if (p.values.size < MAX_VALUES) p.values.set(key, n);
+      else p.more = true;
+    }
+  };
   for (const m of models) {
-    let n = 0;
-    for (let i = 0; i < m.count && n < limitPerModel; i++, n++) {
+    for (const [k, v, u] of fileProps(m)) add('File', 'File', k, v, u, m.count);
+    for (const [k, v, u] of projectProps(m)) add('Project', 'Project', k, v, u, m.count);
+    for (let i = 0; i < m.count; i++) {
+      const el = m.elements[i];
+      if (el.cls === 'IfcProject') continue;
+      for (const [k, v, u] of summaryProps(m, i)) if (k !== 'Classification' && k !== 'System') add('Summary', 'Summary', k, v, u);
+      const cls = classificationText(m, el);
+      if (cls.length) add('Summary', 'Summary', 'Classification', cls);
+      const sys = systems(m, el);
+      if (sys.length) add('Summary', 'Summary', 'System', sys);
+      for (const [k, v, u] of locationProps(m, i)) add('Location', 'Location', k, v, u);
+      const mats = materialNames(m, el);
+      add('Material', 'Material', 'Material', mats.length ? mats : undefined);
+      if (el.mat >= 0 && m.materials[el.mat].set) add('Material', 'Material', 'Material Layer Set', m.materials[el.mat].set);
+      for (const c of el.classes) {
+        const x = m.classes[c];
+        add('PropertySet', 'Classification', x.system || 'Klassifikation', `${x.code} ${x.name}`.trim());
+      }
+      // a property present in both the instance and the type set counts once per element;
+      // psetName '' collects every property regardless of its set ("any property set")
+      const seen = new Set();
+      const seenAny = new Set();
       for (const ps of psetsOf(m, i)) {
-        let s = sets.get(ps.n);
-        if (!s) sets.set(ps.n, (s = new Set()));
-        for (const p of ps.p) s.add(p[0]);
+        for (const [name, value, unit] of ps.p) {
+          const key = `${ps.n}\u0000${name}`;
+          if (!seen.has(key)) { seen.add(key); add('PropertySet', ps.n, name, value, unit); }
+          if (!seenAny.has(name)) { seenAny.add(name); add('PropertySet', '', name, value, unit); }
+        }
       }
     }
   }
-  return sets;
+  const order = { Summary: 0, Location: 1, Material: 2, PropertySet: 3, File: 4, Project: 5 };
+  const out = [...groups.values()].map((g) => ({
+    type: g.type,
+    psetName: g.psetName,
+    props: [...g.props.values()].map((p) => ({
+      name: p.name, count: p.count, unit: p.unit, more: p.more, valueType: inferValueType(p.kinds),
+      values: [...p.values].sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true })),
+    })).sort((a, b) => (g.type === 'PropertySet' ? a.name.localeCompare(b.name, undefined, { numeric: true }) : 0)),
+  }));
+  out.sort((a, b) => order[a.type] - order[b.type] || a.psetName.localeCompare(b.psetName, undefined, { numeric: true }));
+  return { groups: out };
+}
+
+function inferValueType(kinds) {
+  if (!kinds.size) return 'StringValue';
+  if ([...kinds].every((k) => k === 'boolean')) return 'BoolValue';
+  if ([...kinds].every((k) => k === 'boolean' || k === 'logical')) return 'LogicalValue';
+  if ([...kinds].every((k) => k === 'number')) return 'DoubleValue';
+  return 'StringValue';
+}
+
+/** Find a property entry in a catalog (empty pset name = any property set). */
+export function catalogEntry(catalog, prop) {
+  if (!catalog || !prop) return null;
+  const n = norm(prop.name);
+  const anySet = !prop.psetName || prop.psetName === '*';
+  for (const g of catalog.groups) {
+    if (g.type !== (prop.type || 'PropertySet')) continue;
+    if (g.type === 'PropertySet' && (anySet ? g.psetName !== '' : norm(g.psetName) !== norm(prop.psetName))) continue;
+    const p = g.props.find((x) => norm(x.name) === n);
+    if (p) return p;
+  }
+  return null;
 }

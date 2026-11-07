@@ -113,11 +113,14 @@ function makePredicate(rule) {
   };
 }
 
+const hiddenChild = (el) => el.cls === 'IfcSpace' || el.supers.includes('IfcOpeningElement');
+
 /**
- * Evaluate a smart view against all models.
+ * Evaluate a smart view against all models. Matches propagate to contained and
+ * aggregated elements; `skipChild(el)` excludes children (default: spaces, openings).
  * @returns {{perModel: Array<{model, vis, ghost, color}>, legend: Array}}
  */
-export function evaluate(view, models) {
+export function evaluate(view, models, skipChild = hiddenChild) {
   const W = models.map((m) => ({ model: m, vis: new Uint8Array(m.count), ghost: new Uint8Array(m.count), color: new Int32Array(m.count).fill(-1) }));
   const legend = [];
   let chain = [];
@@ -137,7 +140,7 @@ export function evaluate(view, models) {
       for (let i = 0; i < m.count; i++) {
         if (hit[i]) continue;
         const el = m.elements[i];
-        if (preds.every((p) => p(m, i, el))) for (const d of m.descendants(i)) hit[d] = 1;
+        if (preds.every((p) => p(m, i, el))) for (const d of m.descendants(i, [], skipChild)) hit[d] = 1;
       }
       for (let i = 0; i < m.count; i++) {
         const h = hit[i];

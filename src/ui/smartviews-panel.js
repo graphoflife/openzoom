@@ -1,14 +1,9 @@
 import { h, showMenu, clear, dialog, promptDialog, confirmDialog, download, pickFiles, toast, hexToRgb, rgbToHex } from './dom.js';
 import { icon } from './icons.js';
 import { t } from '../i18n.js';
-import { ZOOM_TYPES } from '../core/ifc-classes.js';
-import { ACTIONS, CONDITIONS, PROPERTY_TYPES, NO_VALUE_CONDITIONS, exportBcsv, importBcsv, rule, uuid, evaluate, applyResult } from '../core/smartviews.js';
-import { collectPropertyCatalog } from '../core/props.js';
-
-const SUMMARY_NAMES = ['Name', 'Description', 'GUID', 'IfcType', 'IfcEntity', 'Type', 'Object Type', 'Predefined Type', 'Tag', 'Model', 'Classification', 'System', 'Long Name', 'Volume', 'Area', 'Height', 'Bottom Elevation', 'Top Elevation'];
-const LOCATION_NAMES = ['Site', 'Building', 'Building Storey', 'Storey Elevation', 'Space'];
-const FILE_NAMES = ['File Name', 'Schema', 'Application', 'Author', 'Organization'];
-const PROJECT_NAMES = ['Name', 'Long Name', 'Phase', 'Description'];
+import { ZOOM_TYPES, classToZoomType } from '../core/ifc-classes.js';
+import { ACTIONS, CONDITIONS, NO_VALUE_CONDITIONS, exportBcsv, importBcsv, rule, uuid, evaluate, applyResult } from '../core/smartviews.js';
+import { openPropertyPicker, openValuePicker, propertyText, closePicker } from './property-picker.js';
 
 /** Smart view sets tree with apply-on-click, editor, .bcsv import/export. */
 export class SmartViewsPanel {
@@ -175,31 +170,34 @@ export class SmartViewsPanel {
     if (!v) return;
     const readonly = !!set?.builtin;
     const draft = JSON.parse(JSON.stringify(v));
-    const catalog = collectPropertyCatalog(this.app.models.models);
-    const psetNames = [...catalog.keys()].sort();
-    const allProps = [...new Set([...catalog.values()].flatMap((s) => [...s]))].sort();
-    const dl = (id, items) => h('datalist', { id }, ...items.map((x) => h('option', { value: x })));
+    const typeOptions = this.elementTypeOptions();
     const nameInput = h('input.input', { value: draft.title });
     const descInput = h('textarea.input', { rows: 2 }, draft.description || '');
     const tbody = h('tbody');
     const renderRules = () => {
       clear(tbody);
-      draft.rules.forEach((r, k) => tbody.appendChild(this.ruleRow(draft, r, k, renderRules, psetNames)));
+      draft.rules.forEach((r, k) => tbody.appendChild(this.ruleRow(draft, r, k, renderRules, typeOptions)));
     };
     renderRules();
     const take = draft.takeoff || { psetName: 'None', propName: 'None', op: 0 };
-    const tkPset = h('input.input.small', { value: take.psetName === 'None' ? '' : take.psetName, list: 'sv-psets', placeholder: 'Property Set' });
-    const tkProp = h('input.input.small', { value: take.propName === 'None' ? '' : take.propName, list: 'sv-props', placeholder: t('sv.property') });
+    let takeProp = take.propName && take.propName !== 'None'
+      ? { type: ['Summary', 'Location', 'Material', 'File', 'Project'].includes(take.psetName) ? take.psetName : 'PropertySet', psetName: take.psetName, name: take.propName }
+      : null;
+    const tkBtn = h('button.input.small.prop-btn');
+    const drawTake = () => { tkBtn.textContent = takeProp ? propertyText(takeProp) : '–'; };
+    drawTake();
+    tkBtn.addEventListener('click', () => openPropertyPicker(this.app, tkBtn, { current: takeProp, numericOnly: true, onPick: (p) => { takeProp = p; drawTake(); } }));
+    const tkClear = h('button.icon-btn', { title: t('ui.delete'), html: icon('close', 14), on: { click: () => { takeProp = null; drawTake(); } } });
     const tkOp = h('select.input.small', ...['Σ', 'Ø', 'Min', 'Max'].map((x, i) => h('option', { value: i, selected: Number(take.op) === i }, x)));
     const collect = () => {
       draft.title = nameInput.value || draft.title;
       draft.description = descInput.value;
-      draft.takeoff = { psetName: tkPset.value || 'None', propName: tkProp.value || 'None', op: Number(tkOp.value) };
+      draft.takeoff = takeProp
+        ? { psetName: takeProp.type === 'PropertySet' ? takeProp.psetName || '' : takeProp.type, propName: takeProp.name, op: Number(tkOp.value) }
+        : { psetName: 'None', propName: 'None', op: 0 };
       return draft;
     };
     const body = h('div.sv-editor',
-      dl('sv-psets', psetNames), dl('sv-props', allProps), dl('sv-summary', SUMMARY_NAMES), dl('sv-location', LOCATION_NAMES),
-      dl('sv-file', FILE_NAMES), dl('sv-project', PROJECT_NAMES),
       readonly ? h('div.notice', t('sv.readonly')) : null,
       h('div.form-row', h('label', t('sv.name'), nameInput)),
       h('div.rules-wrap', h('table.rules',
@@ -208,9 +206,9 @@ export class SmartViewsPanel {
       h('div.form-row.row', h('button.btn', { on: { click: () => { draft.rules.push(rule('Any', ['Summary', 'Summary', 'Model'], ['StringIsDefined'], ['Add'])); renderRules(); } } }, `+ ${t('sv.addRule')}`)),
       h('div.form-row.two',
         h('label', t('sv.description'), descInput),
-        h('label', t('sv.takeoff'), h('div.row', tkPset, tkProp, tkOp))));
+        h('label', t('sv.takeoff'), h('div.row', tkBtn, tkClear, tkOp))));
     const buttons = [
-      { label: t('sv.preview'), run: () => { applyResult(this.app, evaluate(collect(), this.app.models.models)); this.app.legendTitle = draft.title; this.app.renderLegend(); return false; } },
+      { label: t('sv.preview'), run: () => { applyResult(this.app, evaluate(collect(), this.app.models.models, this.app.state.skipChild)); this.app.legendTitle = draft.title; this.app.renderLegend(); return false; } },
     ];
     if (!readonly) {
       buttons.push({
@@ -223,10 +221,24 @@ export class SmartViewsPanel {
       });
     }
     buttons.push({ label: t('ui.cancel') });
-    dialog({ title: `${t('sv.editTitle')} – ${v.title}`, body, buttons, width: 1100, className: 'wide' });
+    dialog({ title: `${t('sv.editTitle')} – ${v.title}`, body, buttons, width: 1100, className: 'wide', onClose: closePicker });
   }
 
-  ruleRow(draft, r, k, rerender, psetNames) {
+  /** Element types present in the models (with counts) first, then all bcsv types. */
+  elementTypeOptions() {
+    const counts = new Map();
+    for (const m of this.app.models.models) {
+      for (let i = 0; i < m.count; i++) {
+        if (!m.hasGeom[i] && !m.children[i].length) continue;
+        const z = classToZoomType(m.elements[i].cls);
+        counts.set(z, (counts.get(z) || 0) + 1);
+      }
+    }
+    const present = [...counts.keys()].sort();
+    return { present, counts, rest: ZOOM_TYPES.filter((z) => z !== 'Any' && !counts.has(z)) };
+  }
+
+  ruleRow(draft, r, k, rerender, typeOptions) {
     const p = r.property || (r.property = { type: 'Summary', psetName: 'Summary', name: 'Model', valueType: 'StringValue', unit: 'None' });
     const c = r.condition || (r.condition = { type: 'StringIsDefined', value: '' });
     const a = r.action || (r.action = { type: 'Add' });
@@ -235,18 +247,27 @@ export class SmartViewsPanel {
       s.addEventListener('change', () => onChange(s.value));
       return s;
     };
-    const typeSel = sel(ZOOM_TYPES.includes(r.ifcType) ? ZOOM_TYPES : [r.ifcType, ...ZOOM_TYPES], r.ifcType || 'Any', (x) => { r.ifcType = x; });
-    const listFor = { Summary: 'sv-summary', Location: 'sv-location', File: 'sv-file', Project: 'sv-project', PropertySet: 'sv-props', Material: '' }[p.type] || 'sv-props';
-    const ptype = sel(PROPERTY_TYPES, p.type || 'PropertySet', (x) => {
-      p.type = x;
-      p.psetName = x === 'PropertySet' ? '' : x;
-      p.name = { Summary: 'Name', Location: 'Building Storey', Material: 'Material', File: 'File Name', Project: 'Name', PropertySet: '' }[x];
-      rerender();
-    }, (x) => t(`ptype.${x}`));
-    const pset = h('input.input.small', { value: p.psetName || '', list: 'sv-psets', placeholder: t('sv.psetHint'), style: { display: p.type === 'PropertySet' ? '' : 'none' } });
-    pset.addEventListener('input', () => { p.psetName = pset.value; });
-    const pname = h('input.input.small', { value: p.name || '', list: listFor, placeholder: t('sv.property') });
-    pname.addEventListener('input', () => { p.name = pname.value; });
+    const cur = r.ifcType || 'Any';
+    const known = cur === 'Any' || typeOptions.present.includes(cur) || typeOptions.rest.includes(cur);
+    const typeSel = h('select.input.small',
+      h('option', { value: 'Any', selected: cur === 'Any' }, 'Any'),
+      known ? null : h('option', { value: cur, selected: true }, cur),
+      typeOptions.present.length ? h('optgroup', { label: t('sv.inModel') }, ...typeOptions.present.map((z) => h('option', { value: z, selected: z === cur }, `${z} (${typeOptions.counts.get(z)})`))) : null,
+      h('optgroup', { label: t('sv.allTypes') }, ...typeOptions.rest.map((z) => h('option', { value: z, selected: z === cur }, z))));
+    typeSel.addEventListener('change', () => { r.ifcType = typeSel.value; });
+    // property: one button opening the searchable union of all properties
+    const propBtn = h('button.input.small.prop-btn', { title: propertyText(p) }, propertyText(p));
+    propBtn.addEventListener('click', () => openPropertyPicker(this.app, propBtn, {
+      current: p,
+      onPick: (np) => {
+        const changedType = np.valueType !== p.valueType;
+        Object.assign(p, np);
+        if (changedType || !CONDITIONS[p.valueType].includes(c.type)) {
+          c.type = { StringValue: 'Is', DoubleValue: 'Equals', BoolValue: 'BooleanTrue', LogicalValue: 'LogicalTrue' }[p.valueType];
+        }
+        rerender();
+      },
+    }));
     const vtype = sel(Object.keys(CONDITIONS), p.valueType || 'StringValue', (x) => {
       p.valueType = x;
       if (!CONDITIONS[x].includes(c.type)) c.type = CONDITIONS[x][0];
@@ -254,8 +275,15 @@ export class SmartViewsPanel {
     }, (x) => t(`vtype.${x}`));
     const conds = CONDITIONS[p.valueType || 'StringValue'];
     const cond = sel(conds.includes(c.type) ? conds : [c.type, ...conds], c.type, (x) => { c.type = x; rerender(); }, (x) => t(`cond.${x}`));
-    const value = h('input.input.small', { value: c.value || '', disabled: NO_VALUE_CONDITIONS.has(c.type) });
+    const noValue = NO_VALUE_CONDITIONS.has(c.type);
+    const value = h('input.input.small', { value: c.value || '', disabled: noValue });
     value.addEventListener('input', () => { c.value = value.value; });
+    const valueBtn = h('button.icon-btn.value-btn', { title: t('pick.values'), disabled: noValue }, '▾');
+    valueBtn.addEventListener('click', () => openValuePicker(this.app, value, p, (val) => {
+      // "is one of" keeps a ;-separated list
+      c.value = (c.type === 'Or' || c.type === 'Nor') && c.value ? `${c.value};${val}` : val;
+      value.value = c.value;
+    }));
     const act = sel(ACTIONS, a.type, (x) => { a.type = x; if (['SetColored', 'AddSetColored'].includes(x) && a.r === undefined) Object.assign(a, { r: 220, g: 40, b: 40 }); rerender(); }, (x) => t(`act.${x}`));
     const hasColor = ['SetColored', 'AddSetColored'].includes(a.type);
     const color = h('input', { type: 'color', value: rgbToHex([a.r ?? 220, a.g ?? 40, a.b ?? 40]), style: { visibility: hasColor ? 'visible' : 'hidden' } });
@@ -270,6 +298,6 @@ export class SmartViewsPanel {
       h('button.icon-btn', { title: '↑', html: icon('arrowUp', 14), on: { click: () => move(-1) } }),
       h('button.icon-btn', { title: '↓', html: icon('arrowDown', 14), on: { click: () => move(1) } }),
       h('button.icon-btn', { title: t('ui.delete'), html: icon('close', 14), on: { click: () => { draft.rules.splice(k, 1); rerender(); } } }));
-    return h('tr', h('td', typeSel), h('td', h('div.row', ptype, pset, pname)), h('td', vtype), h('td', cond), h('td', value), h('td', act), h('td', color), tools);
+    return h('tr', h('td', typeSel), h('td', propBtn), h('td', vtype), h('td', cond), h('td', h('div.row.nowrap', value, valueBtn)), h('td', act), h('td', color), tools);
   }
 }

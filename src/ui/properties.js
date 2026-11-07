@@ -76,7 +76,7 @@ export class PropertiesPanel {
       if (this.groupKey === '*') table.appendChild(h('tr.group-row', h('td', { colspan: 2 }, groupLabel(g.key))));
       for (const [name, r] of g.rows) {
         const val = r.varies ? t('props.varies') : formatValue(this.app, r.value, r.unit);
-        const tr = h('tr.prop-row', h('td.pn', { title: name }, translateName(name, g.type)), h('td.pv', { title: val, class: `pv${r.varies ? ' varies' : ''}` }, val));
+        const tr = h('tr.prop-row', h('td.pn', { title: name }, displayName(name, g.type)), h('td.pv', { title: val, class: `pv${r.varies ? ' varies' : ''}` }, val));
         tr.addEventListener('click', () => this.selectRow(tr, g, name, r));
         tr.addEventListener('contextmenu', (e) => { e.preventDefault(); this.selectRow(tr, g, name, r); this.rowMenu(e, g, name, r); });
         table.appendChild(tr);
@@ -138,7 +138,7 @@ export class PropertiesPanel {
       run: () => {
         const ref = this.propRef(g, name);
         const view = {
-          guid: uuid(), title: `${translateName(name, g.type)}`, description: '', rules: [
+          guid: uuid(), title: `${displayName(name, g.type)}`, description: '', rules: [
             rule('Any', ['Summary', 'Summary', 'Model'], ['StringIsDefined'], ['AddSetTransparent']),
             rule('Any', [ref.type, ref.psetName, name], ['StringIsDefined'], ['SetOpaque']),
             rule('Any', [ref.type, ref.psetName, name], ['StringIsDefined'], ['SetAutoColored']),
@@ -159,7 +159,7 @@ const NAME_DE = {
   'Material Layer Set': 'Schichtaufbau', 'File Name': 'Dateiname', Schema: 'Schema', Application: 'Anwendung', Author: 'Autor', Organization: 'Organisation', Phase: 'Phase',
 };
 
-function translateName(name, type) {
+export function displayName(name, type) {
   if (getLanguage() === 'de' && type !== 'PropertySet' && NAME_DE[name]) return NAME_DE[name];
   return name;
 }

@@ -13,6 +13,7 @@ import { IssueManager } from './core/issues.js';
 import { Annotations } from './core/annotations.js';
 import { sharedUniforms } from './core/materials.js';
 import { CATEGORIES } from './core/ifc-classes.js';
+import { buildPropertyCatalog } from './core/props.js';
 import { h, toast, download, pickFiles, confirmDialog, showMenu } from './ui/dom.js';
 import { buildMenubar, buildToolbar } from './ui/chrome.js';
 import { TreePanel } from './ui/tree.js';
@@ -213,7 +214,7 @@ export class App {
     this.viewer.canvas.addEventListener('pointerleave', () => { this.state.setHover(-1); this.statusInfo.textContent = ''; });
     this.state.addEventListener('selection', () => this.updateSelectionStatus());
     this.state.addEventListener('change', () => this.renderLegend());
-    this.models.addEventListener('changed', () => { this.updateWelcome(); this.updateSceneBounds(); this.updateSelectionStatus(); });
+    this.models.addEventListener('changed', () => { this.catalogCache = null; this.updateWelcome(); this.updateSceneBounds(); this.updateSelectionStatus(); });
     this.controls.addEventListener('mode', () => this.updateFlyStatus());
     this.controls.addEventListener('speed', () => this.updateFlyStatus());
     this.viewer.addEventListener('render', () => this.drawAxes());
@@ -262,6 +263,12 @@ export class App {
     for (const m of this.models.models) for (let i = 0; i < m.count; i++) if (m.bbox(i, tmp)) box.union(tmp);
     this.controls.sceneRadius = box.isEmpty() ? 50 : Math.max(5, box.getBoundingSphere(new THREE.Sphere()).radius);
     this.controls.updateClipRange();
+  }
+
+  /** Union of all properties of all loaded elements (cached until the models change). */
+  propertyCatalog() {
+    if (!this.catalogCache) this.catalogCache = buildPropertyCatalog(this.models.models);
+    return this.catalogCache;
   }
 
   pickPoint(x, y) {
@@ -716,7 +723,7 @@ export class App {
   /** Apply a smart view by guid (from the panel or a project). */
   applySmartView(view) {
     if (!this.models.models.length) return;
-    const res = evaluate(view, this.models.models);
+    const res = evaluate(view, this.models.models, this.state.skipChild);
     applyResult(this, res);
     this.smartViews.activeGuid = view.guid;
     this.legendTitle = view.title;

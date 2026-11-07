@@ -1,11 +1,10 @@
 import { h, clear, download } from './dom.js';
 import { icon } from './icons.js';
 import { t } from '../i18n.js';
-import { getValue, valueText, collectPropertyCatalog } from '../core/props.js';
+import { getValue, valueText } from '../core/props.js';
+import { openPropertyPicker, propertyText } from './property-picker.js';
 import { toCsv } from './clashes-panel.js';
 
-const SUMMARY = ['IfcType', 'Type', 'Name', 'Object Type', 'Predefined Type', 'Model', 'Classification', 'System', 'Volume', 'Area', 'Height'];
-const LOCATION = ['Building Storey', 'Building', 'Space'];
 const FLAT_LIMIT = 3000;
 
 /** Quantity lists ("Lists" tab): group elements by a property and sum numeric values. */
@@ -36,7 +35,7 @@ export class ListsPanel {
     const later = () => { clearTimeout(timer); timer = setTimeout(() => this.isVisible && this.refresh(), 150); };
     app.state.addEventListener('change', later);
     app.state.addEventListener('selection', () => this.source === 'selection' && later());
-    app.models.addEventListener('changed', () => { this.catalog = null; later(); });
+    app.models.addEventListener('changed', later);
   }
 
   save() {
@@ -48,41 +47,23 @@ export class ListsPanel {
     if (v) this.refresh();
   }
 
-  propOptions() {
-    if (!this.catalog) this.catalog = collectPropertyCatalog(this.app.models.models);
-    const opts = [];
-    for (const n of SUMMARY) opts.push([{ type: 'Summary', psetName: 'Summary', name: n }, `${t('ptype.Summary')} · ${n}`]);
-    for (const n of LOCATION) opts.push([{ type: 'Location', psetName: 'Location', name: n }, `${t('ptype.Location')} · ${n}`]);
-    opts.push([{ type: 'Material', psetName: 'Material', name: 'Material' }, t('ptype.Material')]);
-    for (const [ps, props] of [...this.catalog].sort((a, b) => a[0].localeCompare(b[0]))) {
-      for (const p of [...props].sort()) opts.push([{ type: 'PropertySet', psetName: ps, name: p }, `${ps} · ${p}`]);
-    }
-    return opts;
-  }
-
-  propSelect(value, onChange, includeEmpty = false) {
-    const key = (p) => `${p.type}|${p.psetName}|${p.name}`;
-    const opts = this.propOptions();
-    const s = h('select.input.small.grow',
-      includeEmpty ? h('option', { value: '' }, `+ ${t('list.addColumn')}`) : null,
-      ...opts.map(([p, l]) => h('option', { value: key(p), selected: value && key(p) === key(value) }, l)));
-    s.addEventListener('change', () => {
-      if (!s.value) return;
-      const [type, psetName, ...rest] = s.value.split('|');
-      onChange({ type, psetName, name: rest.join('|') });
-      this.save();
-      this.refresh();
-    });
-    return s;
+  /** Button that opens the property picker (union of all properties). */
+  propButton(value, onChange, { numericOnly = false, placeholder } = {}) {
+    const b = h('button.input.small.prop-btn', value ? propertyText(value) : placeholder);
+    b.addEventListener('click', () => openPropertyPicker(this.app, b, {
+      current: value, numericOnly,
+      onPick: (p) => { onChange({ type: p.type, psetName: p.psetName, name: p.name }); this.save(); this.refresh(); },
+    }));
+    return b;
   }
 
   renderConfig() {
     clear(this.config);
     this.config.append(
-      h('div.row', h('span.form-label', t('list.groupBy')), this.propSelect(this.groupBy, (p) => { this.groupBy = p; })),
+      h('div.row', h('span.form-label', t('list.groupBy')), this.propButton(this.groupBy, (p) => { this.groupBy = p; })),
       h('div.row.wrap', h('span.form-label', t('list.columns')),
-        ...this.columns.map((c, k) => h('span.chip.removable', `${c.name}`, h('span.x', { on: { click: () => { this.columns.splice(k, 1); this.save(); this.refresh(); } } }, '×'))),
-        this.propSelect(null, (p) => { this.columns.push(p); }, true)));
+        ...this.columns.map((c, k) => h('span.chip.removable', { title: propertyText(c) }, `${c.name}`, h('span.x', { on: { click: () => { this.columns.splice(k, 1); this.save(); this.refresh(); } } }, '×'))),
+        this.propButton(null, (p) => { this.columns.push(p); }, { numericOnly: true, placeholder: `+ ${t('list.addColumn')}` })));
   }
 
   elements() {

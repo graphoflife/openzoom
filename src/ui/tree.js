@@ -165,7 +165,7 @@ export class TreePanel {
       for (const gid of this.nodeGids(node)) {
         const m = M.modelOf(gid);
         if (!m) continue;
-        for (const i of m.descendants(gid - m.base)) { check(m, i); if (on && off) return 'mixed'; }
+        for (const i of m.descendants(gid - m.base, [], this.app.state.skipChild)) { check(m, i); if (on && off) return 'mixed'; }
       }
     }
     if (on && off) return 'mixed';

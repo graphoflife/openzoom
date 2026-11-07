@@ -134,13 +134,13 @@ export class Model {
     return target;
   }
 
-  /** Local indices of i and all descendants. */
-  descendants(i, out = []) {
+  /** Local indices of i and all descendants; `skip(el)` prunes children (never i itself). */
+  descendants(i, out = [], skip = null) {
     const stack = [i];
     while (stack.length) {
       const j = stack.pop();
       out.push(j);
-      for (const c of this.children[j]) stack.push(c);
+      for (const c of this.children[j]) if (!skip || !skip(this.elements[c])) stack.push(c);
     }
     return out;
   }
@@ -249,13 +249,16 @@ export class ModelManager extends EventTarget {
     return out;
   }
 
-  /** gid plus all its descendants. */
-  expand(gids) {
+  /**
+   * gids plus their descendants. Spaces and openings below a matched element are
+   * skipped while their global toggle (Alt+S / Alt+O) is off, like in Zoom.
+   */
+  expand(gids, skip = this.app.state?.skipChild) {
     const out = new Set();
     for (const gid of gids) {
       const m = this.modelOf(gid);
       if (!m) continue;
-      for (const i of m.descendants(gid - m.base)) out.add(m.base + i);
+      for (const i of m.descendants(gid - m.base, [], skip)) out.add(m.base + i);
     }
     return out;
   }

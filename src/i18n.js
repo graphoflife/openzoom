@@ -60,6 +60,10 @@ const de = {
   'ptype.Summary': 'Übersicht', 'ptype.Location': 'Ort', 'ptype.Material': 'Material', 'ptype.File': 'Datei', 'ptype.Project': 'Projekt', 'ptype.PropertySet': 'Property Set',
   'vtype.StringValue': 'Text', 'vtype.DoubleValue': 'Zahl', 'vtype.BoolValue': 'Boolesch', 'vtype.LogicalValue': 'Logisch',
 
+  'pick.anySet': 'Beliebiges Property Set', 'pick.search': 'Eigenschaft oder Property Set suchen…', 'pick.custom': '„{name}“ als Eigenschaft verwenden (beliebiges Set)',
+  'pick.elements': 'Elemente', 'pick.none': 'Keine passende Eigenschaft.', 'pick.searchValue': 'Wert suchen…', 'pick.more': 'Weitere Werte vorhanden (Liste gekürzt).',
+  'pick.noValues': 'Keine Werte in den geladenen Modellen.', 'pick.choose': 'Eigenschaft wählen…', 'pick.values': 'Vorhandene Werte', 'sv.inModel': 'Im Modell vorhanden', 'sv.allTypes': 'Alle Elementtypen',
+
   'clash.new': 'Neue Prüfung', 'clash.run': 'Prüfen', 'clash.runAll': 'Alle prüfen', 'clash.cancel': 'Abbrechen', 'clash.name': 'Name',
   'clash.setA': 'Auswahl A', 'clash.setB': 'Auswahl B', 'clash.mode': 'Art', 'clash.hard': 'Durchdringung (hart)', 'clash.clearance': 'Abstand (weich)',
   'clash.tolerance': 'Toleranz [mm]', 'clash.clearanceVal': 'Mindestabstand [mm]', 'clash.sameModel': 'Kollisionen im selben Modell ignorieren',
@@ -154,6 +158,9 @@ const en = {
   'cond.LogicalTrue': 'is true', 'cond.LogicalFalse': 'is false', 'cond.LogicalUnknown': 'is unknown', 'cond.LogicalIsDefined': 'is defined', 'cond.LogicalIsNotDefined': 'is not defined',
   'ptype.Summary': 'Summary', 'ptype.Location': 'Location', 'ptype.Material': 'Material', 'ptype.File': 'File', 'ptype.Project': 'Project', 'ptype.PropertySet': 'Property set',
   'vtype.StringValue': 'Text', 'vtype.DoubleValue': 'Number', 'vtype.BoolValue': 'Boolean', 'vtype.LogicalValue': 'Logical',
+  'pick.anySet': 'Any property set', 'pick.search': 'Search property or property set…', 'pick.custom': 'Use "{name}" as property (any set)',
+  'pick.elements': 'elements', 'pick.none': 'No matching property.', 'pick.searchValue': 'Search value…', 'pick.more': 'More values exist (list truncated).',
+  'pick.noValues': 'No values in the loaded models.', 'pick.choose': 'Choose property…', 'pick.values': 'Existing values', 'sv.inModel': 'Present in model', 'sv.allTypes': 'All element types',
   'clash.new': 'New test', 'clash.run': 'Run', 'clash.runAll': 'Run all', 'clash.cancel': 'Cancel', 'clash.name': 'Name', 'clash.setA': 'Selection A', 'clash.setB': 'Selection B',
   'clash.mode': 'Mode', 'clash.hard': 'Hard (intersection)', 'clash.clearance': 'Clearance (soft)', 'clash.tolerance': 'Tolerance [mm]', 'clash.clearanceVal': 'Clearance [mm]',
   'clash.sameModel': 'Ignore clashes within the same model', 'clash.kind.all': 'All elements', 'clash.kind.types': 'IFC classes', 'clash.kind.model': 'Model(s)',

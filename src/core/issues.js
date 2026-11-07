@@ -142,6 +142,8 @@ export class IssueManager extends EventTarget {
       const exc = new Set(c.exceptions || []);
       const def = c.visibilityDefault !== false;
       const hints = c.viewSetupHints || {};
+      app.state.showSpaces = !!hints.spacesVisible;
+      app.state.showOpenings = !!hints.openingsVisible;
       const colorOf = new Map();
       for (const col of c.coloring || []) {
         const rgb = bcfToColor(col.color);

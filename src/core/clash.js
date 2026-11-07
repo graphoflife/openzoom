@@ -54,7 +54,7 @@ export class ClashManager extends EventTarget {
       case 'smartview': {
         const found = this.app.smartViews.findView(set.value);
         if (!found) return [];
-        const res = evaluate(found.view, M.models);
+        const res = evaluate(found.view, M.models, this.app.state.skipChild);
         const out = [];
         for (const w of res.perModel) for (let i = 0; i < w.model.count; i++) if (w.vis[i] && ok(w.model, i, w.model.elements[i])) out.push(w.model.base + i);
         return out;

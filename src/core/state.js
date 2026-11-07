@@ -1,5 +1,7 @@
 import { CATEGORIES } from './ifc-classes.js';
 
+const isOpening = (el) => el.supers.includes('IfcOpeningElement');
+
 /**
  * Element visibility / transparency / color with undo-redo history,
  * "My View" and the selection. All element references are global ids (gid).
@@ -14,6 +16,10 @@ export class ElementState extends EventTarget {
     this.selection = new Set();
     this.hoverGid = -1;
     this.legend = null; // smart view legend [{color, label, count}]
+    // global view settings like Zoom's Alt+S / Alt+O: spaces and openings only show when switched on
+    this.showSpaces = false;
+    this.showOpenings = false;
+    this.skipChild = (el) => (!this.showSpaces && el.cls === 'IfcSpace') || (!this.showOpenings && isOpening(el));
   }
 
   get models() { return this.app.models.models; }
@@ -132,9 +138,7 @@ export class ElementState extends EventTarget {
   showAll() {
     this.record();
     for (const m of this.models) for (let i = 0; i < m.count; i++) {
-      const el = m.elements[i];
-      const def = !(el.cls === 'IfcSpace' || el.supers.includes('IfcOpeningElement'));
-      if (def) m.flags[i * 4] = 255;
+      if (!this.skipChild(m.elements[i])) m.flags[i * 4] = 255;
     }
     this.changed();
   }
@@ -149,6 +153,8 @@ export class ElementState extends EventTarget {
   restoreView() {
     this.record();
     for (const m of this.models) m.resetState();
+    this.showSpaces = false;
+    this.showOpenings = false;
     this.legend = null;
     this.changed();
   }
@@ -165,6 +171,8 @@ export class ElementState extends EventTarget {
       if (m.isVisible(i)) anyVisible = true;
     }
     if (!gids.length) return false;
+    if (key === 'spaces') this.showSpaces = !anyVisible;
+    if (key === 'openings') this.showOpenings = !anyVisible;
     this.record();
     for (const gid of gids) {
       const m = this.app.models.modelOf(gid);
