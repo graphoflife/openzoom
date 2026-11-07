@@ -2,8 +2,9 @@ import * as THREE from 'three';
 import { MeshBVH } from 'three-mesh-bvh';
 import { createMeshMaterial, createEdgeMaterial } from './materials.js';
 import { HIDDEN_BY_DEFAULT, SPATIAL, categoryOf } from './ifc-classes.js';
+import { clearGeometryCache } from './elementgeom.js';
 
-const TEX_W = 1024;
+const TEX_W = 4096; // 4096 x 4096 texels covers 16 M elements
 let nextModelId = 1;
 let nextBase = 0;
 
@@ -31,6 +32,7 @@ export class Model {
 
     this.children = Array.from({ length: this.count }, () => []);
     this.roots = [];
+    this.breakParentCycles();
     this.elements.forEach((el, i) => {
       if (el.parent >= 0) this.children[el.parent].push(i);
       else this.roots.push(i);
@@ -51,19 +53,33 @@ export class Model {
     this.resetState();
   }
 
+  /** Malformed files can relate elements in a loop; cut such parent links. */
+  breakParentCycles() {
+    const els = this.elements;
+    for (let i = 0; i < this.count; i++) {
+      let p = els[i].parent;
+      for (let steps = 0; p >= 0; steps++) {
+        if (p === i || steps > 64) { els[i].parent = -1; break; }
+        p = els[p].parent;
+      }
+    }
+  }
+
   computeDerived() {
     const els = this.elements;
     for (let i = 0; i < this.count; i++) {
       const el = els[i];
       let p = el.parent;
       const aggregates = [];
+      // an opening's parent is the element it voids: that is not an aggregate
+      const opening = el.supers.includes('IfcFeatureElementSubtraction');
       while (p >= 0) {
         const pe = els[p];
         if (pe.cls === 'IfcBuildingStorey' && el.storey === undefined) el.storey = p;
         if (pe.cls === 'IfcBuilding' && el.building === undefined) el.building = p;
         if (pe.cls === 'IfcSite' && el.site === undefined) el.site = p;
         if (pe.cls === 'IfcSpace' && el.space === undefined) el.space = p;
-        if (!SPATIAL.has(pe.cls) && pe.cls !== 'IfcSpace') aggregates.unshift(pe);
+        if (!opening && !SPATIAL.has(pe.cls) && pe.cls !== 'IfcSpace') aggregates.unshift(pe);
         p = pe.parent;
       }
       el.category = categoryOf(el, aggregates);
@@ -134,18 +150,22 @@ export class Model {
     return target;
   }
 
-  /** Local indices of i and all descendants; `skip(el)` prunes children (never i itself). */
+  /**
+   * Local indices of i and all descendants. `skip(el)` leaves an element out
+   * (never i itself) but still visits its children, e.g. furniture in a space.
+   */
   descendants(i, out = [], skip = null) {
     const stack = [i];
     while (stack.length) {
       const j = stack.pop();
-      out.push(j);
-      for (const c of this.children[j]) if (!skip || !skip(this.elements[c])) stack.push(c);
+      if (j === i || !skip || !skip(this.elements[j])) out.push(j);
+      for (const c of this.children[j]) stack.push(c);
     }
     return out;
   }
 
   dispose() {
+    clearGeometryCache(this);
     this.group.traverse((o) => {
       if (o.geometry) { o.geometry.boundsTree = null; o.geometry.dispose(); }
       if (o.material) o.material.dispose();
@@ -174,6 +194,7 @@ export class ModelManager extends EventTarget {
     this.offset = null;
     this.reqId = 0;
     this.pending = new Map();
+    this.queue = Promise.resolve();
     this.worker = new Worker(new URL('./ifc-worker.js', import.meta.url), { type: 'module' });
     this.worker.onmessage = (e) => this.onMessage(e.data);
   }
@@ -186,7 +207,17 @@ export class ModelManager extends EventTarget {
     else if (msg.type === 'error') { this.pending.delete(msg.id); p.reject(new Error(msg.message)); }
   }
 
-  async load(file, onProgress) {
+  /**
+   * Load one IFC file. Loads run one after another so every model after the
+   * first is parsed with the shared coordinate offset of the first one.
+   */
+  load(file, onProgress) {
+    const run = this.queue.then(() => this.loadNow(file, onProgress));
+    this.queue = run.catch(() => {});
+    return run;
+  }
+
+  async loadNow(file, onProgress) {
     const buffer = file instanceof ArrayBuffer ? file : await file.arrayBuffer();
     const source = new Uint8Array(buffer.slice(0));
     const id = ++this.reqId;

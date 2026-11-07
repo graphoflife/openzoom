@@ -3,6 +3,13 @@ import { promptDialog } from '../ui/dom.js';
 
 const COLOR = 0xe8202a;
 
+function disposeLine(viewer, obj) {
+  if (!obj) return;
+  viewer.overlay.remove(obj);
+  obj.geometry.dispose();
+  obj.material.dispose();
+}
+
 /**
  * Markup drawn on a plane in 3D: click a surface to draw on it, Shift = plane facing the camera.
  * Tools: line, arrow, ellipse, cloud, rect, text.
@@ -59,7 +66,7 @@ export class Annotations {
     const p = ray.intersectPlane(d.plane, new THREE.Vector3());
     if (!p) return;
     d.end.copy(p);
-    if (d.obj) this.viewer.overlay.remove(d.obj);
+    disposeLine(this.viewer, d.obj);
     d.obj = this.build(d);
     if (d.obj) this.viewer.overlay.add(d.obj);
   }
@@ -68,7 +75,7 @@ export class Annotations {
     const d = this.drag;
     this.drag = null;
     if (!d) return;
-    if (d.obj) this.viewer.overlay.remove(d.obj);
+    disposeLine(this.viewer, d.obj);
     if (d.tool === 'text') {
       const text = await promptDialog(this.app.t('cmd.annText'), this.app.t('cmd.annText'), '');
       if (text) this.addItem({ tool: 'text', text, origin: d.origin.clone(), end: d.end.clone(), plane: d.plane, u: d.u, v: d.v });

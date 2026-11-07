@@ -269,7 +269,12 @@ function readUnits(modelID) {
       } else if (kind === 'IFCCONVERSIONBASEDUNIT' && unit.ConversionFactor) {
         sym = str(unit.Name).toLowerCase();
         const mwu = safeLine(modelID, refId(unit.ConversionFactor));
-        if (mwu) scale = Number(val(mwu.ValueComponent)) || 1;
+        if (mwu) {
+          scale = Number(val(mwu.ValueComponent)) || 1;
+          // e.g. foot = 304.8 MILLIMETRE: apply the prefix of the base unit
+          const base = mwu.UnitComponent ? safeLine(modelID, refId(mwu.UnitComponent)) : null;
+          if (base && base.Prefix) scale *= PREFIX[str(base.Prefix)] || 1;
+        }
         if (sym === 'foot') sym = 'ft';
         if (sym === 'inch') sym = 'in';
         if (sym === 'degree') sym = '°';
@@ -335,6 +340,15 @@ export function parseIfc(ifcApi, webIfc, { buffer, fileName, offset, edges }, on
   const data = new Uint8Array(buffer);
   const modelID = api.OpenModel(data, { COORDINATE_TO_ORIGIN: false, CIRCLE_SEGMENTS: 16 });
   if (modelID < 0) throw new Error('IFC-Datei konnte nicht geöffnet werden');
+  try {
+    return parseModel(modelID, fileName, offset, edges, id);
+  } finally {
+    // also after an error, so a failed file does not stay in the wasm heap
+    api.CloseModel(modelID);
+  }
+}
+
+function parseModel(modelID, fileName, offset, edges, id) {
   const schema = api.GetModelSchema(modelID);
   const units = readUnits(modelID);
 
@@ -356,7 +370,7 @@ export function parseIfc(ifcApi, webIfc, { buffer, fileName, offset, edges }, on
     if (p - lastP > 0.02) { lastP = p; progress(id, 'geometry', p); }
   });
   // Spaces and openings are hidden by default but must be available.
-  const extraTypes = [WebIFC.IFCSPACE, WebIFC.IFCOPENINGELEMENT];
+  const extraTypes = [WebIFC.IFCSPACE, WebIFC.IFCOPENINGELEMENT, WebIFC.IFCOPENINGSTANDARDCASE].filter(Boolean);
   api.StreamAllMeshesWithTypes(modelID, extraTypes, (mesh) => {
     if (!geo.ranges.has(mesh.expressID)) geo.addMesh(modelID, mesh, eidOf);
   });
@@ -400,7 +414,6 @@ export function parseIfc(ifcApi, webIfc, { buffer, fileName, offset, edges }, on
     el.area = area;
   }
 
-  api.CloseModel(modelID);
   progress(id, 'done', 1);
   return {
     fileName, schema, units, offset: geo.offset || [0, 0, 0],

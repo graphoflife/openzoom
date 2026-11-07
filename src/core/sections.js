@@ -22,6 +22,8 @@ export class Sections extends EventTarget {
     this.drag = null;
     app.controls.interceptors.push(this);
     app.controls.addEventListener('ctrlwheel', (e) => this.onCtrlWheel(e.detail.delta));
+    // keep grips a constant size on screen
+    this.viewer.onBeforeRender.push(() => this.scaleHandles());
   }
 
   get radius() { return this.app.controls.sceneRadius || 50; }
@@ -32,10 +34,13 @@ export class Sections extends EventTarget {
     this.app.status(this.app.t('status.clickSurfacePlane'));
   }
 
-  /** Plane through point that cuts away the side the normal points to. */
-  addPlane(point, normal, select = true) {
+  /**
+   * Plane through point that cuts away the side the normal points to. The small
+   * default offset keeps the clicked surface itself visible.
+   */
+  addPlane(point, normal, select = true, offset = 0.001) {
     const n = normal.clone().normalize();
-    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(n.clone().negate(), point.clone().addScaledVector(n, 0.001));
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(n.clone().negate(), point.clone().addScaledVector(n, offset));
     const entry = { id: nextId++, plane, helperVisible: true };
     this.buildHelper(entry, point);
     this.planes.push(entry);
@@ -65,11 +70,19 @@ export class Sections extends EventTarget {
     );
     quad.renderOrder = 5;
     group.add(quad, outline);
+    // grip to drag the plane even where the cut model fills the screen
+    const handle = new THREE.Mesh(
+      new THREE.SphereGeometry(1, 16, 12),
+      new THREE.MeshBasicMaterial({ color: PLANE_COLOR, depthTest: false, transparent: true, opacity: 0.95 }),
+    );
+    handle.renderOrder = 12;
     entry.group = group;
     entry.quad = quad;
     entry.outline = outline;
+    entry.handle = handle;
     entry.anchor = anchor.clone();
     this.viewer.scene.add(group);
+    this.viewer.overlay.add(handle);
     this.placeHelper(entry);
   }
 
@@ -79,14 +92,18 @@ export class Sections extends EventTarget {
     entry.group.position.copy(center);
     entry.group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), p.normal);
     entry.group.visible = this.helpersVisible && entry.helperVisible && !this.suspended;
+    entry.handle.position.copy(center);
+    entry.handle.visible = entry.group.visible;
   }
 
   select(entry) {
+    if (this.selected === entry) return;
     this.selected = entry;
     for (const e of this.planes) {
       const sel = e === entry;
       e.quad.material.opacity = sel ? 0.2 : 0.1;
       e.outline.material.color.setHex(sel ? SEL_COLOR : PLANE_COLOR);
+      e.handle.material.color.setHex(sel ? SEL_COLOR : PLANE_COLOR);
     }
     this.viewer.requestRender();
     this.dispatchEvent(new Event('change'));
@@ -95,9 +112,13 @@ export class Sections extends EventTarget {
   removePlane(entry) {
     if (!entry) return;
     this.viewer.scene.remove(entry.group);
+    this.viewer.overlay.remove(entry.handle);
     entry.group.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); });
+    entry.handle.geometry.dispose();
+    entry.handle.material.dispose();
     this.planes = this.planes.filter((e) => e !== entry);
     if (this.selected === entry) this.selected = null;
+    if (this.floorPlan === entry) this.floorPlan = null;
     this.update();
   }
 
@@ -209,11 +230,9 @@ export class Sections extends EventTarget {
   }
 
   scaleHandles() {
-    if (!this.box) return;
-    for (const h of this.box.handles) {
-      const s = this.app.controls.worldPerPixel(h.position) * 7;
-      h.scale.setScalar(s);
-    }
+    const handles = this.planes.map((p) => p.handle);
+    if (this.box) handles.push(...this.box.handles);
+    for (const h of handles) h.scale.setScalar(this.app.controls.worldPerPixel(h.position) * 7);
   }
 
   onCtrlWheel(delta) {
@@ -255,19 +274,22 @@ export class Sections extends EventTarget {
         return true;
       }
     }
-    // section plane helpers: click selects, drag moves along the normal
-    const quads = this.planes.filter((p) => p.group.visible).map((p) => p.quad);
-    if (!quads.length) return false;
+    // section planes: drag the grip, or the plane where no model is behind it
+    const shown = this.planes.filter((p) => p.group.visible);
+    if (!shown.length) return false;
+    this.scaleHandles();
     const rc = new THREE.Raycaster(ray.origin, ray.direction);
-    const hits = rc.intersectObjects(quads, false);
-    if (!hits.length) return false;
-    // only grab the plane when it is in front of the model under the cursor
-    const modelHit = this.app.viewer.pick(e.clientX, e.clientY, this.app.models.models);
-    if (modelHit && modelHit.distance < hits[0].distance - 1e-3) return false;
-    const entry = this.planes.find((p) => p.quad === hits[0].object);
+    let hit = rc.intersectObjects(shown.map((p) => p.handle), false)[0];
+    let entry = hit && shown.find((p) => p.handle === hit.object);
+    if (!entry) {
+      hit = rc.intersectObjects(shown.map((p) => p.quad), false)[0];
+      if (!hit || this.app.viewer.pick(e.clientX, e.clientY, this.app.models.models)) return false;
+      entry = shown.find((p) => p.quad === hit.object);
+    }
+    this.app.state.clearSelection();
     this.select(entry);
     const n = entry.plane.normal.clone();
-    const origin = hits[0].point.clone();
+    const origin = entry.plane.projectPoint(hit.point, new THREE.Vector3());
     this.drag = { kind: 'plane', entry, n, origin, c0: entry.plane.constant, t0: this.axisParam(ray, origin, n), moved: false };
     return true;
   }
@@ -307,11 +329,6 @@ export class Sections extends EventTarget {
 
   up() { this.drag = null; }
 
-  hover(e) {
-    if (!this.box) return;
-    this.scaleHandles();
-  }
-
   // --- state --------------------------------------------------------------------------
   allPlanes() {
     const out = this.planes.map((p) => p.plane);
@@ -345,6 +362,36 @@ export class Sections extends EventTarget {
     this.floorPlan = null;
   }
 
+  // --- project file ---------------------------------------------------------------------
+  serialize() {
+    return {
+      planes: this.planes.filter((p) => !p.floorPlan).map((p) => ({
+        normal: p.plane.normal.toArray(), constant: p.plane.constant, anchor: p.anchor.toArray(), helperVisible: p.helperVisible,
+      })),
+      box: this.box ? { min: this.box.min.toArray(), max: this.box.max.toArray() } : null,
+      suspended: this.suspended,
+    };
+  }
+
+  deserialize(s) {
+    this.deleteAll();
+    if (!s) return;
+    for (const p of s.planes || []) {
+      const entry = { id: nextId++, plane: new THREE.Plane(new THREE.Vector3().fromArray(p.normal), p.constant), helperVisible: p.helperVisible !== false };
+      this.buildHelper(entry, new THREE.Vector3().fromArray(p.anchor || [0, 0, 0]));
+      this.planes.push(entry);
+    }
+    if (s.box) {
+      this.createBox(new THREE.Box3(new THREE.Vector3().fromArray(s.box.min), new THREE.Vector3().fromArray(s.box.max)));
+      // createBox adds a margin; restore the exact saved extents
+      this.box.min.fromArray(s.box.min);
+      this.box.max.fromArray(s.box.max);
+      this.updateBox();
+    }
+    if (!!s.suspended !== this.suspended) this.toggleSuspend();
+    this.update();
+  }
+
   // --- BCF conversion ------------------------------------------------------------------
   toBcf() {
     const M = this.app.models;
@@ -361,7 +408,7 @@ export class Sections extends EventTarget {
     for (const c of list || []) {
       const p = M.fromIfc(c.location);
       const d = M.dirFromIfc(c.direction).normalize();
-      this.addPlane(p, d, false);
+      this.addPlane(p, d, false, 0);
     }
     this.update();
   }

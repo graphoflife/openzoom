@@ -6,6 +6,14 @@ import { classToZoomType } from './ifc-classes.js';
 
 const norm = (s) => (s || '').toLowerCase().replace(/[\s_-]+/g, '');
 
+/** World height of a storey: its placement, or Elevation when an exporter puts every storey at Z = 0. */
+export function storeyZ(el) {
+  const pz = el.placementZ, ev = el.elevation;
+  if (pz === undefined || pz === null) return ev ?? 0;
+  if (Math.abs(pz) < 1e-9 && ev) return ev;
+  return pz;
+}
+
 function siblingName(model, idx) {
   return idx === undefined || idx < 0 ? '' : model.elements[idx].name || model.elements[idx].longName || '';
 }

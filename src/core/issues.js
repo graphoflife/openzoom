@@ -150,6 +150,9 @@ export class IssueManager extends EventTarget {
         if (rgb) for (const g of col.guids) colorOf.set(g, rgb);
       }
       for (const m of M.models) {
+        // BCF has no model switch: element visibility carries it, so show the model itself
+        m.visible = true;
+        m.group.visible = true;
         for (let i = 0; i < m.count; i++) {
           const el = m.elements[i];
           let vis = exc.has(el.guid) ? !def : def;
@@ -168,7 +171,13 @@ export class IssueManager extends EventTarget {
       app.state.select(sel);
     }
     app.sections.fromBcf(vp.clippingPlanes || []);
-    const cam = vp.camera;
+    this.applyCamera(vp.camera);
+  }
+
+  /** Move the camera to a BCF camera (IFC coordinates). */
+  applyCamera(cam) {
+    const app = this.app;
+    const M = app.models;
     if (cam && cam.position) {
       const pos = M.fromIfc(cam.position);
       const dir = M.dirFromIfc(cam.direction).normalize();

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { elementDistance } from './elementgeom.js';
+import { storeyZ } from './props.js';
 
 const LINE_COLOR = 0xffd400;
 let nextId = 1;
@@ -65,7 +66,7 @@ export class Measure extends EventTarget {
 
   cancelPending() {
     this.pending = [];
-    for (const o of this.pendingObjects) this.viewer.overlay.remove(o);
+    for (const o of this.pendingObjects) { this.viewer.overlay.remove(o); o.geometry.dispose(); o.material.dispose(); }
     this.pendingObjects = [];
     this.rubber.visible = false;
     this.mindistA = null;
@@ -346,7 +347,7 @@ export class Measure extends EventTarget {
       const el = hit.model.elements[hit.index];
       const st = el.storey !== undefined ? hit.model.elements[el.storey] : null;
       if (st) {
-        const base = st.placementZ ?? st.elevation ?? 0;
+        const base = storeyZ(st);
         return { value: z - base, suffix: st.name };
       }
     }

@@ -1,7 +1,7 @@
 import { h, clear, dialog } from './dom.js';
 import { t, getLanguage } from '../i18n.js';
 import { classLabel } from '../core/ifc-classes.js';
-import { psetsOf, valueText } from '../core/props.js';
+import { psetsOf, valueText, storeyZ } from '../core/props.js';
 
 /** Ctrl+F: search names, GUIDs, types and (optionally) property values. */
 export function openSearch(app, initial = '') {
@@ -130,7 +130,7 @@ export function chooseStorey(app) {
       title: t('floor.select'), width: 360,
       body: h('div.choice-list', ...list.map((s) => h('button.btn.block', {
         on: { click: () => { chosen = s; d.close(); } },
-      }, `${s.el.name} (${app.fmtNum(s.el.placementZ ?? s.el.elevation ?? 0, 2)} m)${app.models.models.length > 1 ? ` · ${s.m.name}` : ''}`))),
+      }, `${s.el.name} (${app.fmtNum(storeyZ(s.el), 2)} m)${app.models.models.length > 1 ? ` · ${s.m.name}` : ''}`))),
       onClose: () => resolve(chosen),
     });
   });

@@ -14,7 +14,7 @@ OpenZoom ist ein freier IFC-Viewer, der komplett im Browser läuft (keine Instal
 | **Navigation** | Orbit um den angeklickten Punkt, Flugmodus (W/A/S/D), Standardansichten, **isometrisch**, Perspektive/Orthogonal, Zoom auf Auswahl |
 | **Gebäudestruktur** | Baum nach Gebäudestruktur, IFC-Klasse, Typ, Material oder Geschoss; Sichtbarkeits-Checkboxen, Filter |
 | **Eigenschaften** | Übersicht, Ort, Material, Klassifikation, Systeme, alle Psets/Qsets inkl. Typ-Eigenschaften; Tab/Shift+Tab blättert, Mehrfachauswahl zeigt ‹verschieden› |
-| **Smart Views** | Regel-Editor wie in Zoom (Elementtyp · Eigenschaft · Operator · Wert · Aktion · Farbe), alle 10 Aktionen inkl. *Automatisch färben*, Legende mit Mengenauszug, **Import/Export `.bcsv`** (BIMcollab-Format v5), Standard-Sets (Geschoss, IFC-Typ, Material, Brandschutz, Prüfungen …) |
+| **Smart Views** | Regel-Editor wie in Zoom (Elementtyp · Eigenschaft · Operator · Wert · Aktion · Farbe), durchsuchbare Auswahl **aller** Eigenschaften aller Elemente (nach Property Set, mit Anzahl) und der im Modell vorhandenen Werte, alle 10 Aktionen inkl. *Automatisch färben*, Legende mit Mengenauszug, **Import/Export `.bcsv`** (BIMcollab-Format v5), Standard-Sets (Geschoss, IFC-Typ, Material, Brandschutz, Prüfungen …) |
 | **Sichtbarkeit** | Ein-/Ausblenden, Isolieren, Transparent, Einfärben, „Meine Ansicht“, Bauteil-Schalter (Räume, Wände, Decken …), Rückgängig/Wiederholen |
 | **Kollisionsprüfung** | Auswahl A × B (IFC-Klassen, Modelle, Smart Views, Auswahl), harte Kollision mit Toleranz oder Mindestabstand, Status-Verwaltung, Fokus-Ansicht (A rot / B grün), CSV-Export, Kollisionen → BCF-Issues |
 | **Schnitte** | Schnittebene per Klick auf eine Fläche, X/Y/Z-Ebenen, **Schnittbox** mit Griffen, Aussetzen, gefüllte Schnittflächen, **Grundriss je Geschoss** (Alt+F) |
@@ -55,6 +55,7 @@ npm run dev        # http://localhost:5173
 npm run build      # statischer Build in dist/
 npm run demo       # Demo-IFC-Modelle neu erzeugen (public/demo)
 npm run check      # Demo-Modelle mit web-ifc prüfen + Parser-Smoke-Test
+node scripts/smoke-test.mjs datei.ifc   # beliebige IFC-Datei mit dem Parser prüfen
 ```
 
 Aufbau: `src/core` (Laden im Web-Worker, Rendering mit three.js, Element-Zustand als GPU-Textur, Smart Views, Kollisionen, Schnitte, Messen, BCF) und `src/ui` (Menüs, Panels, Dialoge). Ein Push auf `main` baut und veröffentlicht über GitHub Actions auf GitHub Pages.

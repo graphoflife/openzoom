@@ -10,7 +10,12 @@ export function elementGeometry(model, idx) {
   if (!model.geomCache) model.geomCache = new Map();
   const cache = model.geomCache;
   let g = cache.get(idx);
-  if (g) return g;
+  if (g) {
+    // least recently used eviction: move the hit to the end
+    cache.delete(idx);
+    cache.set(idx, g);
+    return g;
+  }
   const ranges = model.ranges[idx];
   if (!ranges) return null;
   let nv = 0, ni = 0;

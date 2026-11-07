@@ -78,6 +78,8 @@ export function buildToolbar(app, el) {
     const c = app.commands.get(id);
     const b = h('button.tb', { title: `${t(c.label)}${c.shortcut ? ` (${c.shortcut.split(',')[0]})` : ''}`, html: icon(opts.icon || c.icon || 'info', 20) });
     b.addEventListener('click', () => app.run(id));
+    // keep keyboard focus in the 3D view so Space etc. don't re-click the button
+    b.addEventListener('mousedown', (e) => e.preventDefault());
     buttons.push({ b, c });
     return b;
   };

@@ -203,7 +203,13 @@ export class ClashesPanel {
   focus(r, animate = true) {
     const app = this.app;
     const M = app.models;
-    const ga = M.findByGuid(r.guidA), gb = M.findByGuid(r.guidB);
+    // gids are exact within a session; GUIDs survive reloading the models
+    const resolve = (guid, gid) => {
+      const el = M.element(gid);
+      if (el && (!guid || el.guid === guid)) return gid;
+      return guid ? M.findByGuid(guid) : -1;
+    };
+    const ga = resolve(r.guidA, r.a), gb = resolve(r.guidB, r.b);
     if (ga < 0 || gb < 0) return;
     this.focused = r;
     app.state.record();

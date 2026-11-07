@@ -13,7 +13,7 @@ import { IssueManager } from './core/issues.js';
 import { Annotations } from './core/annotations.js';
 import { sharedUniforms } from './core/materials.js';
 import { CATEGORIES } from './core/ifc-classes.js';
-import { buildPropertyCatalog } from './core/props.js';
+import { buildPropertyCatalog, storeyZ } from './core/props.js';
 import { h, toast, download, pickFiles, confirmDialog, showMenu } from './ui/dom.js';
 import { buildMenubar, buildToolbar } from './ui/chrome.js';
 import { TreePanel } from './ui/tree.js';
@@ -212,7 +212,14 @@ export class App {
       this.statusInfo.textContent = hit ? this.hoverText(hit) : '';
     });
     this.viewer.canvas.addEventListener('pointerleave', () => { this.state.setHover(-1); this.statusInfo.textContent = ''; });
-    this.state.addEventListener('selection', () => this.updateSelectionStatus());
+    this.state.addEventListener('selection', () => {
+      // an element selection takes over Space / Delete from a selected section plane
+      if (this.state.selection.size) this.sections.select(null);
+      this.updateSelectionStatus();
+    });
+    this.sections.addEventListener('change', () => {
+      if (this.floorPlanStorey && !this.sections.floorPlan) this.floorPlanStorey = null;
+    });
     this.state.addEventListener('change', () => this.renderLegend());
     this.models.addEventListener('changed', () => { this.catalogCache = null; this.updateWelcome(); this.updateSceneBounds(); this.updateSelectionStatus(); });
     this.controls.addEventListener('mode', () => this.updateFlyStatus());
@@ -282,6 +289,7 @@ export class App {
     if (button !== 0) return;
     if (this.annotations.active) return;
     if (this.measure.active) { this.measure.click(e); return; }
+    this.sections.select(null);
     const hit = this.viewer.pick(e.clientX, e.clientY, this.models.models);
     const mode = e.ctrlKey || e.metaKey ? 'toggle' : e.shiftKey ? 'add' : 'replace';
     if (!hit) { if (mode === 'replace') this.state.clearSelection(); return; }
@@ -544,8 +552,11 @@ export class App {
   async removeModel(model) {
     if (await confirmDialog(t('cmd.remove'), t('msg.removeModel', { name: model.name }))) {
       for (const gid of [...this.state.selection]) if (this.models.modelOf(gid) === model) this.state.selection.delete(gid);
+      this.state.forgetModel(model);
+      if (this.tree.selectedModel === model) this.tree.selectedModel = null;
       this.models.remove(model);
       this.state.syncSelection();
+      this.renderLegend();
     }
   }
 
@@ -555,17 +566,21 @@ export class App {
     const files = {};
     const guidsOf = (set) => [...set].map((g) => M.element(g)?.guid).filter(Boolean);
     const project = {
-      format: 'openzoom-project', version: 1, saved: new Date().toISOString(),
-      models: M.models.map((m) => ({ name: m.name, visible: m.visible })),
+      format: 'openzoom-project', version: 2, saved: new Date().toISOString(),
+      // unique zip paths: two models may share a file name
+      models: M.models.map((m, k) => ({ name: m.name, file: `models/${k + 1}_${m.name}`, visible: m.visible, state: this.state.serializeModel(m) })),
       smartViews: this.smartViews.local,
       clashTests: this.clashes.tests,
       issues: this.issues.issues,
       myView: guidsOf(this.state.myView),
-      viewpoint: this.issues.captureViewpoint(),
+      view: {
+        camera: this.issues.captureViewpoint().camera,
+        showSpaces: this.state.showSpaces, showOpenings: this.state.showOpenings,
+        sections: this.sections.serialize(),
+      },
     };
-    project.viewpoint.snapshot = null;
     files['project.json'] = strToU8(JSON.stringify(project));
-    for (const m of M.models) files[`models/${m.name}`] = [m.source, { level: 6 }];
+    for (const pm of project.models) files[pm.file] = [M.models[project.models.indexOf(pm)].source, { level: 6 }];
     const zip = zipSync(files);
     const name = (M.models[0]?.project?.name || 'Projekt').replace(/[^\w\-äöüÄÖÜß ]+/g, '_');
     download(`${name}.ozp`, zip, 'application/zip');
@@ -578,10 +593,12 @@ export class App {
     const project = JSON.parse(strFromU8(z['project.json']));
     this.clearModels();
     for (const m of project.models || []) {
-      const data = z[`models/${m.name}`];
+      const data = z[m.file || `models/${m.name}`];
       if (!data) continue;
       const model = await this.loadModel(new File([data], m.name));
-      if (model && m.visible === false) { model.visible = false; model.group.visible = false; }
+      if (!model) continue;
+      if (m.visible === false) { model.visible = false; model.group.visible = false; }
+      if (m.state) this.state.restoreModel(model, m.state);
     }
     if (project.smartViews) this.smartViews.importSets(project.smartViews);
     if (project.clashTests) { this.clashes.tests = project.clashTests; this.clashes.changed(); }
@@ -591,7 +608,14 @@ export class App {
       for (const g of project.myView) { const gid = this.models.findByGuid(g); if (gid >= 0) s.add(gid); }
       this.state.myView = s;
     }
-    if (project.viewpoint) this.issues.showViewpoint(project.viewpoint);
+    const view = project.view;
+    if (view) {
+      this.state.showSpaces = !!view.showSpaces;
+      this.state.showOpenings = !!view.showOpenings;
+      this.state.changed();
+      this.sections.deserialize(view.sections);
+      if (view.camera) this.issues.applyCamera(view.camera);
+    } else if (project.viewpoint) this.issues.showViewpoint(project.viewpoint); // version 1 files
     this.dirty = false;
   }
 
@@ -693,7 +717,7 @@ export class App {
   }
 
   enterFloorPlan(storeyEl) {
-    const z = storeyEl.placementZ ?? storeyEl.elevation ?? 0;
+    const z = storeyZ(storeyEl);
     const y = z - (this.models.offset?.[1] || 0) + Number(this.settings.get('cutHeight') || 1.2);
     this.sections.setFloorPlan(y);
     this.floorPlanStorey = storeyEl;
@@ -706,7 +730,7 @@ export class App {
   storeys() {
     const out = [];
     for (const m of this.models.models) m.elements.forEach((el) => { if (el.cls === 'IfcBuildingStorey') out.push({ m, el }); });
-    out.sort((a, b) => (a.el.placementZ ?? a.el.elevation ?? 0) - (b.el.placementZ ?? b.el.elevation ?? 0));
+    out.sort((a, b) => storeyZ(a.el) - storeyZ(b.el));
     return out;
   }
 
@@ -769,20 +793,27 @@ export class App {
   }
 }
 
+/**
+ * Shortcut name of a key event. Letters and = + - * follow the keyboard layout
+ * (e.key, so Ctrl+Z is Z on QWERTZ and AZERTY); digits use the physical key;
+ * when Option/Alt turned e.key into another character (macOS) e.code is used.
+ */
 function comboOf(e) {
   let key;
   const c = e.code || '';
-  if (/^Key[A-Z]$/.test(c)) key = c.slice(3);
+  const k = e.key || '';
+  if (/^[a-z]$/i.test(k)) key = k.toUpperCase();
+  else if (['=', '+', '-', '*'].includes(k)) key = k;
+  else if (c === 'Space') key = 'Space';
   else if (/^Digit\d$/.test(c)) key = c.slice(5);
   else if (/^Numpad\d$/.test(c)) key = c.slice(6);
   else if (c === 'NumpadAdd') key = '+';
   else if (c === 'NumpadSubtract') key = '-';
   else if (c === 'NumpadMultiply') key = '*';
-  else if (c === 'Space') key = 'Space';
-  else if (['=', '+', '-', '*'].includes(e.key)) key = e.key;
+  else if (/^Key[A-Z]$/.test(c)) key = c.slice(3);
   else if (c === 'Equal') key = '=';
   else if (c === 'Minus') key = '-';
-  else key = e.key.length === 1 ? e.key.toUpperCase() : e.key;
+  else key = k.length === 1 ? k.toUpperCase() : k;
   const symbol = ['=', '+', '-', '*'].includes(key);
   const parts = [];
   if (e.ctrlKey || e.metaKey) parts.push('Ctrl');

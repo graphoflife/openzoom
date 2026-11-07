@@ -138,7 +138,7 @@ export function evaluate(view, models, skipChild = hiddenChild) {
     const rgb = [rule.action.r ?? 255, rule.action.g ?? 0, rule.action.b ?? 0];
     const packed = (rgb[0] << 16) | (rgb[1] << 8) | rgb[2];
     const auto = type === 'SetAutoColored' ? new Map() : null;
-    let matchCount = 0;
+    const colored = [];
     for (const w of W) {
       const m = w.model;
       const hit = new Uint8Array(m.count);
@@ -170,11 +170,12 @@ export function evaluate(view, models, skipChild = hiddenChild) {
             break;
           default: break;
         }
-        if (h && m.hasGeom[i]) matchCount++;
+        // only elements that actually got the colour (Set* skips hidden ones)
+        if (h && w.vis[i] && m.hasGeom[i] && COLOR_ACTIONS.has(type)) colored.push([w, i]);
       }
     }
     if (COLOR_ACTIONS.has(type)) {
-      legend.push({ color: rgb, label: ruleLabel(rule), count: matchCount });
+      legend.push({ color: rgb, label: ruleLabel(rule), count: colored.length, items: colored });
     }
     if (auto) {
       const keys = [...auto.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));

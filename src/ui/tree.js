@@ -2,7 +2,7 @@ import { h, showMenu } from './dom.js';
 import { icon } from './icons.js';
 import { t, getLanguage } from '../i18n.js';
 import { classLabel, SPATIAL, CATEGORY_COLORS } from '../core/ifc-classes.js';
-import { materialNames } from '../core/props.js';
+import { materialNames, storeyZ } from '../core/props.js';
 
 const ROW_H = 22;
 
@@ -20,7 +20,7 @@ export class TreePanel {
 
     const modeSel = h('select.input.small', { on: { change: (e) => { this.mode = e.target.value; localStorage.setItem('oz.treeMode', this.mode); this.rebuild(); } } },
       ...['spatial', 'class', 'type', 'material', 'storey'].map((m) => h('option', { value: m, selected: m === this.mode }, t(`tree.${m === 'class' ? 'class' : m}`))));
-    const filter = h('input.input.small', { type: 'search', placeholder: t('tree.filter'), on: { input: (e) => { this.filter = e.target.value.trim().toLowerCase(); this.flatten(); } } });
+    const filter = h('input.input.small', { type: 'search', placeholder: t('tree.filter'), on: { input: (e) => { this.filterRaw = e.target.value.trim(); this.filter = this.filterRaw.toLowerCase(); this.flatten(); } } });
     const collapse = h('button.icon-btn', { title: '−', html: icon('minus', 14), on: { click: () => { this.expanded.clear(); this.flatten(); } } });
     this.scroll = h('div.tree-scroll', { tabindex: 0 });
     this.spacer = h('div.tree-spacer');
@@ -34,7 +34,11 @@ export class TreePanel {
     M.addEventListener('changed', () => this.rebuild());
     M.addEventListener('added', (e) => this.expanded.add(`m${e.detail.id}`));
     app.state.addEventListener('change', () => this.renderRows());
-    app.state.addEventListener('selection', () => this.renderRows());
+    app.state.addEventListener('selection', () => {
+      // a selection made elsewhere (3D view, search) ends the model-row selection used by Ctrl+Delete
+      if (!this.ownSelect) { this.selectedModel = null; this.selectedKeys.clear(); }
+      this.renderRows();
+    });
     this.rebuild();
   }
 
@@ -58,7 +62,7 @@ export class TreePanel {
     return [...list].sort((a, b) => {
       const A = els[a], B = els[b];
       if (rank(A) !== rank(B)) return rank(A) - rank(B);
-      if (A.cls === 'IfcBuildingStorey' && B.cls === 'IfcBuildingStorey') return (A.placementZ ?? A.elevation ?? 0) - (B.placementZ ?? B.elevation ?? 0);
+      if (A.cls === 'IfcBuildingStorey' && B.cls === 'IfcBuildingStorey') return storeyZ(A) - storeyZ(B);
       if (A.cls !== B.cls) return A.cls.localeCompare(B.cls);
       return (A.name || '').localeCompare(B.name || '', undefined, { numeric: true });
     });
@@ -124,7 +128,7 @@ export class TreePanel {
       outer: for (const m of this.app.models.models) {
         for (let i = 0; i < m.count; i++) {
           const el = m.elements[i];
-          if ((el.name || '').toLowerCase().includes(f) || el.cls.toLowerCase().includes(f) || el.guid === this.filter || (el.typeName || '').toLowerCase().includes(f) || (el.longName || '').toLowerCase().includes(f)) {
+          if ((el.name || '').toLowerCase().includes(f) || el.cls.toLowerCase().includes(f) || el.guid === this.filterRaw || (el.typeName || '').toLowerCase().includes(f) || (el.longName || '').toLowerCase().includes(f)) {
             rows.push({ node: this.elNode(m, i, false), depth: 0 });
             if (rows.length > 5000) break outer;
           }
@@ -242,6 +246,7 @@ export class TreePanel {
 
   onRowClick(r, node, e) {
     const st = this.app.state;
+    this.ownSelect = true;
     this.selectedModel = node.kind === 'model' ? node.model : null;
     let gids = this.nodeGids(node);
     if (e.shiftKey && this.lastClicked >= 0) {
@@ -256,6 +261,7 @@ export class TreePanel {
       this.selectedKeys = new Set(node.kind !== 'el' ? [node.key] : []);
       st.select(gids, 'replace');
     }
+    this.ownSelect = false;
     this.lastClicked = r;
     this.scroll.focus({ preventScroll: true });
   }

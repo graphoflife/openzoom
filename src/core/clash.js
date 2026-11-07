@@ -119,7 +119,8 @@ export class ClashManager extends EventTarget {
       const r = test.mode === 'clearance' ? this.clearanceCheck(mA, iA, mB, iB, test.clearance) : this.hardCheck(mA, iA, mB, iB, test.tolerance);
       if (!r) continue;
       const elA = mA.elements[iA], elB = mB.elements[iB];
-      const key = `${elA.guid}:${elB.guid}`;
+      // elements without GlobalId fall back to file + express id
+      const key = `${elA.guid || `${mA.name}#${elA.id}`}:${elB.guid || `${mB.name}#${elB.id}`}`;
       const old = prev.get(key);
       results.push({
         id: old?.id || uuid(), key, a: ga, b: gb, guidA: elA.guid, guidB: elB.guid,
@@ -170,8 +171,13 @@ export class ClashManager extends EventTarget {
       if (bA.containsBox(bB) && pointInside(gA, firstVertex(gB))) return containment(bB, tolerance);
       return null;
     }
+    // A beam end poking into a wall has a flat intersection curve on the wall face;
+    // the vertices lying inside the other element give the penetration depth.
+    const bA = mA.bbox(iA, new THREE.Box3()), bB = mB.bbox(iB, new THREE.Box3());
+    addInsideVertices(gA, gB, bB, box);
+    addInsideVertices(gB, gA, bA, box);
     // nearly coplanar triangles can yield stray segments: clamp to the common bounding box
-    box.intersect(mA.bbox(iA, new THREE.Box3())).intersect(mB.bbox(iB, new THREE.Box3()));
+    box.intersect(bA).intersect(bB);
     if (box.isEmpty()) return null;
     const size = box.getSize(new THREE.Vector3());
     const sorted = [size.x, size.y, size.z].sort((a, b) => a - b);
@@ -199,13 +205,26 @@ function firstVertex(g) {
   return new THREE.Vector3().fromBufferAttribute(g.attributes.position, 0);
 }
 
-/** Ray parity test (odd number of crossings = inside). */
+/** Ray parity test (odd number of crossings = inside); the surface the point lies on is ignored. */
 function pointInside(g, p) {
   const dir = new THREE.Vector3(0.5773, 0.5774, 0.5775).normalize();
   const hits = g.boundsTree.raycast(new THREE.Ray(p, dir), THREE.DoubleSide);
   const uniq = [];
-  for (const h of hits) if (!uniq.some((d) => Math.abs(d - h.distance) < 1e-6)) uniq.push(h.distance);
+  for (const h of hits) if (h.distance > 1e-5 && !uniq.some((d) => Math.abs(d - h.distance) < 1e-6)) uniq.push(h.distance);
   return uniq.length % 2 === 1;
+}
+
+const MAX_VERTEX_TESTS = 3000;
+const _v = new THREE.Vector3();
+
+/** Grow `box` by the vertices of `g` that lie inside `other` (sampled for big meshes). */
+function addInsideVertices(g, other, otherBox, box) {
+  const pos = g.attributes.position;
+  const step = Math.max(1, Math.ceil(pos.count / MAX_VERTEX_TESTS));
+  for (let i = 0; i < pos.count; i += step) {
+    _v.fromBufferAttribute(pos, i);
+    if (otherBox.containsPoint(_v) && pointInside(other, _v)) box.expandByPoint(_v);
+  }
 }
 
 /** Same element tree branch (assembly and its parts) or a door/window and its host wall. */
