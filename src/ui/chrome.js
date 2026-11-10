@@ -76,7 +76,7 @@ export function buildToolbar(app, el) {
   const buttons = [];
   const btn = (id, opts = {}) => {
     const c = app.commands.get(id);
-    const b = h('button.tb', { title: `${t(c.label)}${c.shortcut ? ` (${c.shortcut.split(',')[0]})` : ''}`, html: icon(opts.icon || c.icon || 'info', 20) });
+    const b = h('button.tb', { title: `${t(c.label)}${c.keys.length ? ` (${c.keys[0]})` : ''}`, html: icon(opts.icon || c.icon || 'info', 20) });
     b.addEventListener('click', () => app.run(id));
     // keep keyboard focus in the 3D view so Space etc. don't re-click the button
     b.addEventListener('mousedown', (e) => e.preventDefault());
@@ -107,15 +107,15 @@ export function buildToolbar(app, el) {
     btn('sectionPlane'), btn('sectionBox'), btn('suspend'),
     drop('floor', t('cmd.floorplans'), () => {
       const st = app.storeys();
-      const items = st.map(({ m, el: s }) => ({ label: `${s.name}${app.models.models.length > 1 ? ` · ${m.name}` : ''}`, checked: app.floorPlanStorey === s, run: () => app.enterFloorPlan(s) }));
-      if (app.floorPlanStorey) items.unshift({ label: `✕ ${t('cmd.floorplans')}`, run: () => app.toggleFloorPlan() }, '-');
+      const items = st.map(({ m, el: s }) => ({ label: `${s.name}${app.models.models.length > 1 ? ` · ${m.name}` : ''}`, checked: app.sections.floorPlanStorey === s, run: () => app.enterFloorPlan(s) }));
+      if (app.sections.floorPlan) items.unshift({ label: `✕ ${t('cmd.floorplans')}`, run: () => app.toggleFloorPlan() }, '-');
       return items.length ? items : [{ label: t('floor.none'), disabled: true }];
-    }, { active: () => !!app.floorPlanStorey }), sep(),
+    }, { active: () => !!app.sections.floorPlan }), sep(),
     btn('dimension'),
-    drop('distance', t('cmd.measure'), () => [c('dimension'), c('distance'), c('angle'), c('area'), c('elevation'), c('mindist'), '-', c('clearDims')], { active: () => ['distance', 'angle', 'area', 'mindist'].includes(app.measure.mode) }),
+    drop('distance', t('cmd.measure'), () => [c('dimension'), c('distance'), c('angle'), c('area'), c('elevation'), c('mindist'), '-', c('clearDims')], { active: () => ['measure.distance', 'measure.angle', 'measure.area', 'measure.mindist'].includes(app.tool?.id) }),
     btn('elevation'), sep(),
     btn('cat.spaces', { icon: 'space' }), btn('cat.openings', { icon: 'opening' }), btn('edges'), sep(),
-    drop('annotate', t('cmd.annotations'), () => [c('annLine'), c('annArrow'), c('annEllipse'), c('annCloud'), c('annRect'), c('annText'), '-', c('annClear')], { active: () => !!app.annotations.tool }),
+    drop('annotate', t('cmd.annotations'), () => [c('annLine'), c('annArrow'), c('annEllipse'), c('annCloud'), c('annRect'), c('annText'), '-', c('annClear')], { active: () => !!app.tool?.id.startsWith('ann.') }),
     btn('issue'), btn('screenshot'),
     h('span.flex'),
     h('div.tb-search', { html: icon('search', 16) }, h('input.input', {
@@ -135,7 +135,6 @@ export function buildToolbar(app, el) {
   };
   app.state.addEventListener('change', () => app.toolbar.refresh());
   app.sections.addEventListener('change', () => app.toolbar.refresh());
-  app.measure.addEventListener('mode', () => app.toolbar.refresh());
   app.controls.addEventListener('projection', () => app.toolbar.refresh());
   app.models.addEventListener('changed', () => app.toolbar.refresh());
   app.toolbar.refresh();

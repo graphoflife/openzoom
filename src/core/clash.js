@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { elementGeometry, elementDistance } from './elementgeom.js';
-import { evaluate, uuid } from './smartviews.js';
+import { evaluate } from './smartviews.js';
+import { uuid } from './util.js';
 import { SPATIAL, isGated, isAuxiliary } from './ifc-classes.js';
 
 const IDENTITY = new THREE.Matrix4();
@@ -39,6 +40,14 @@ export class ClashManager extends EventTarget {
   }
 
   changed() { this.dispatchEvent(new Event('change')); }
+
+  /** Project file part: the tests with their results (elements by reference, see ModelManager.refOf). */
+  serialize() { return this.tests; }
+
+  load(tests = []) {
+    this.tests = tests;
+    this.changed();
+  }
 
   /** Resolve a set definition to gids of elements with geometry. */
   resolveSet(set) {
@@ -121,11 +130,11 @@ export class ClashManager extends EventTarget {
       const r = test.mode === 'clearance' ? this.clearanceCheck(mA, iA, mB, iB, test.clearance) : this.hardCheck(mA, iA, mB, iB, test.tolerance);
       if (!r) continue;
       const elA = mA.elements[iA], elB = mB.elements[iB];
-      // elements without GlobalId fall back to file + express id
-      const key = `${elA.guid || `${mA.name}#${elA.id}`}:${elB.guid || `${mB.name}#${elB.id}`}`;
+      const refA = M.refOf(ga), refB = M.refOf(gb);
+      const key = `${refA}:${refB}`;
       const old = prev.get(key);
       results.push({
-        id: old?.id || uuid(), key, a: ga, b: gb, guidA: elA.guid, guidB: elB.guid,
+        id: old?.id || uuid(), key, refA, refB, guidA: elA.guid, guidB: elB.guid,
         nameA: elA.name || elA.cls, nameB: elB.name || elB.cls, clsA: elA.cls, clsB: elB.cls,
         modelA: mA.name, modelB: mB.name,
         point: r.point.toArray(), depth: r.depth, distance: r.distance ?? 0,
@@ -134,7 +143,7 @@ export class ClashManager extends EventTarget {
     }
     // clashes from the previous run that disappeared are resolved
     const now = new Set(results.map((r) => r.key));
-    for (const old of test.results) if (!now.has(old.key) && old.status !== 'resolved') results.push({ ...old, status: 'resolved', a: -1, b: -1 });
+    for (const old of test.results) if (!now.has(old.key) && old.status !== 'resolved') results.push({ ...old, status: 'resolved' });
     if (!job.cancelled) {
       test.results = results;
       test.lastRun = new Date().toISOString();

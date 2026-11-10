@@ -40,13 +40,15 @@ export class ElementState extends EventTarget {
     // gated categories switched on with their Alt toggle (Alt+S spaces, Alt+O openings)
     this.revealed = new Set();
     this.skipChild = (el) => isGated(el) && !this.revealed.has(el.category);
+    app.models.addEventListener('removed', (e) => this.dropModel(e.detail));
   }
 
   get models() { return this.app.models.models; }
 
   // --- history -------------------------------------------------------------
+  // history entries refer to models by id, so a removed model is simply skipped
   snapshot() {
-    return { legend: this.legend, revealed: [...this.revealed], models: this.models.map((m) => ({ m, ...m.packState() })) };
+    return { legend: this.legend, revealed: [...this.revealed], models: this.models.map((m) => ({ id: m.id, ...m.packState() })) };
   }
 
   /** Call before every user-visible change of visibility/colour. */
@@ -58,16 +60,48 @@ export class ElementState extends EventTarget {
 
   restore(snap) {
     // selection/hover channels stay as they are
-    for (const s of snap.models) if (this.models.includes(s.m)) s.m.unpackState(s);
+    for (const s of snap.models) this.models.find((m) => m.id === s.id)?.unpackState(s);
     this.legend = snap.legend;
     this.revealed = new Set(snap.revealed);
     this.changed();
   }
 
-  /** Drop every reference to a removed model (history, My View). Legend gids of it simply match nothing. */
-  forgetModel(model) {
-    for (const stack of [this.undoStack, this.redoStack]) for (const s of stack) s.models = s.models.filter((x) => x.m !== model);
-    for (const gid of [...this.myView]) if (gid >= model.base && gid < model.base + model.count) this.myView.delete(gid);
+  /**
+   * A model was removed. gids are never reused, so its gids in history and My View
+   * simply match nothing; the selection and a legend about it go.
+   */
+  dropModel(model) {
+    const own = (gid) => gid >= model.base && gid < model.base + model.count;
+    if (this.legend?.entries.some((e) => e.gids.some(own))) this.legend = null;
+    if (own(this.hoverGid)) this.hoverGid = -1;
+    for (const gid of [...this.selection]) if (own(gid)) this.selection.delete(gid);
+    this.syncSelection();
+    this.dispatchEvent(new Event('change'));
+  }
+
+  /** Back to an empty project. */
+  reset() {
+    this.undoStack.length = 0;
+    this.redoStack.length = 0;
+    this.legend = null;
+    this.revealed.clear();
+    this.myView.clear();
+    this.selection.clear();
+    this.hoverGid = -1;
+    this.syncSelection();
+    this.changed();
+  }
+
+  /** Project file part: My View as GUIDs and the revealed categories. */
+  serialize() {
+    return { myView: [...this.myView].map((g) => this.app.models.element(g)?.guid).filter(Boolean), revealed: [...this.revealed] };
+  }
+
+  load({ myView = [], revealed = [] } = {}) {
+    this.myView = new Set(myView.map((g) => this.app.models.findByGuid(g)).filter((gid) => gid >= 0));
+    this.revealed = new Set(revealed);
+    this.changed();
+    this.emitMyView();
   }
 
   /** Visibility, transparency and colours of a model for the project file. */
@@ -215,29 +249,17 @@ export class ElementState extends EventTarget {
   toggleCategory(key) {
     const cat = CATEGORIES.find((c) => c.key === key);
     if (!cat) return;
-    const gids = [];
-    let anyVisible = false;
-    for (const m of this.models) for (let i = 0; i < m.count; i++) {
-      if (m.elements[i].category !== key || !m.hasGeom[i]) continue;
-      gids.push(m.base + i);
-      if (m.isVisible(i)) anyVisible = true;
-    }
-    if (!gids.length) return false;
+    if (!this.models.some((m) => m.byCategory.has(key))) return false;
+    const anyVisible = this.categoryVisible(key);
     this.record();
     if (cat.gated) { if (anyVisible) this.revealed.delete(key); else this.revealed.add(key); }
-    for (const gid of gids) {
-      const m = this.app.models.modelOf(gid);
-      m.setVisible(gid - m.base, !anyVisible);
-    }
+    for (const m of this.models) for (const i of m.byCategory.get(key) || []) m.setVisible(i, !anyVisible);
     this.changed();
     return !anyVisible;
   }
 
   categoryVisible(key) {
-    for (const m of this.models) for (let i = 0; i < m.count; i++) {
-      if (m.elements[i].category === key && m.hasGeom[i] && m.isVisible(i)) return true;
-    }
-    return false;
+    return this.models.some((m) => (m.byCategory.get(key) || []).some((i) => m.isVisible(i)));
   }
 
   visibleGids() {

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate';
+import { unzipSync } from 'fflate';
 import { t, setLanguage, getLanguage } from './i18n.js';
 import { Viewer } from './core/viewer.js';
 import { ModelManager } from './core/models.js';
@@ -10,11 +10,11 @@ import { Measure } from './core/measure.js';
 import { ClashManager } from './core/clash.js';
 import { SmartViewLibrary, evaluate } from './core/smartviews.js';
 import { IssueManager } from './core/issues.js';
+import { writeProject, readProject } from './core/project.js';
 import { Annotations } from './core/annotations.js';
 import { sharedUniforms } from './core/materials.js';
-import { CATEGORIES } from './core/ifc-classes.js';
 import { buildPropertyCatalog, storeyZ } from './core/props.js';
-import { h, toast, download, pickFiles, confirmDialog, showMenu } from './ui/dom.js';
+import { h, toast, download, pickFiles, confirmDialog, showMenu, stamp } from './ui/dom.js';
 import { buildMenubar, buildToolbar } from './ui/chrome.js';
 import { TreePanel } from './ui/tree.js';
 import { PropertiesPanel } from './ui/properties.js';
@@ -22,7 +22,10 @@ import { SmartViewsPanel } from './ui/smartviews-panel.js';
 import { ClashesPanel } from './ui/clashes-panel.js';
 import { ListsPanel } from './ui/lists-panel.js';
 import { IssuesPanel } from './ui/issues-panel.js';
-import { openSearch, openSettings, openShortcuts, openAbout, chooseStorey } from './ui/dialogs.js';
+import { chooseStorey } from './ui/dialogs.js';
+import { registerCommands } from './ui/commands.js';
+import { bindKeys } from './ui/keymap.js';
+import { Legend } from './ui/legend.js';
 
 const DEFAULTS = {
   lang: (navigator.language || 'de').startsWith('de') ? 'de' : 'en', unit: 'm', decimals: 3, background: 'zoom', edges: true,
@@ -58,9 +61,9 @@ export class App {
     this.smartViews = new SmartViewLibrary();
     this.clashes = new ClashManager(this);
     this.issues = new IssueManager(this);
-    this.floorPlanStorey = null;
     this.applySettings();
-    this.registerCommands();
+    this.commands = new Map();
+    registerCommands(this);
     this.buildUi();
     this.bindEvents();
     this.updateWelcome();
@@ -161,7 +164,6 @@ export class App {
     this.showTab(localStorage.getItem('oz.tab') || 'navigation');
 
     // viewport overlays
-    this.legendEl = h('div.legend');
     this.progressEl = h('div.progress', h('div.progress-label'), h('div.progress-bar', h('div.progress-fill')));
     this.dropEl = h('div.drop-hint', t('status.dropHint'));
     this.welcomeEl = h('div.welcome',
@@ -174,7 +176,8 @@ export class App {
           h('button.btn', { on: { click: () => this.loadDemo() } }, t('welcome.demo'))),
         h('p.muted', t('welcome.drop'))));
     this.axesEl = h('canvas.axes', { width: 90, height: 90 });
-    this.viewport.append(this.legendEl, this.progressEl, this.dropEl, this.welcomeEl, this.axesEl);
+    this.legend = new Legend(this, this.viewport);
+    this.viewport.append(this.progressEl, this.dropEl, this.welcomeEl, this.axesEl);
   }
 
   showTab(key) {
@@ -204,7 +207,7 @@ export class App {
     let hoverTimer = 0;
     this.controls.addEventListener('hover', (e) => {
       const ev = e.detail;
-      if (this.measure.active) { this.measure.hover(ev); return; }
+      if (this.tool?.hover) { this.tool.hover(ev); return; }
       if (performance.now() - hoverTimer < 40) return;
       hoverTimer = performance.now();
       const hit = this.viewer.pick(ev.clientX, ev.clientY, this.models.models);
@@ -217,15 +220,11 @@ export class App {
       if (this.state.selection.size) this.sections.select(null);
       this.updateSelectionStatus();
     });
-    this.sections.addEventListener('change', () => {
-      if (this.floorPlanStorey && !this.sections.floorPlan) this.floorPlanStorey = null;
-    });
-    this.state.addEventListener('change', () => this.renderLegend());
     this.models.addEventListener('changed', () => { this.catalogCache = null; this.updateWelcome(); this.updateSceneBounds(); this.updateSelectionStatus(); });
-    this.controls.addEventListener('mode', () => this.updateFlyStatus());
-    this.controls.addEventListener('speed', () => this.updateFlyStatus());
+    this.controls.addEventListener('mode', () => this.updateStatus());
+    this.controls.addEventListener('speed', () => this.updateStatus());
     this.viewer.addEventListener('render', () => this.drawAxes());
-    window.addEventListener('keydown', (e) => this.onKeyDown(e));
+    bindKeys(this);
     // drag & drop
     let dragDepth = 0;
     this.root.addEventListener('dragenter', (e) => { e.preventDefault(); dragDepth++; this.dropEl.classList.add('show'); });
@@ -254,9 +253,10 @@ export class App {
     this.statusSel.textContent = `${n ? `${t('status.selected', { n })} · ` : ''}${t('status.elements_count', { n: total })}`;
   }
 
-  updateFlyStatus() {
-    if (this.controls.mode === 'fly') this.status(t('status.fly', { s: this.fmtNum(this.controls.flySpeed, 1) }));
-    else this.status('');
+  /** Status line: the active tool's hint, else the fly speed. */
+  updateStatus() {
+    if (this.tool) this.status(t(this.tool.hint));
+    else this.status(this.controls.mode === 'fly' ? t('status.fly', { s: this.fmtNum(this.controls.flySpeed, 1) }) : '');
     this.toolbar?.refresh();
   }
 
@@ -287,8 +287,7 @@ export class App {
     this.viewer.canvas.focus({ preventScroll: true });
     if (button === 2) { this.openContextMenu(e); return; }
     if (button !== 0) return;
-    if (this.annotations.active) return;
-    if (this.measure.active) { this.measure.click(e); return; }
+    if (this.tool) { this.tool.click?.(e); return; }
     this.sections.select(null);
     const hit = this.viewer.pick(e.clientX, e.clientY, this.models.models);
     const mode = e.ctrlKey || e.metaKey ? 'toggle' : e.shiftKey ? 'add' : 'replace';
@@ -311,16 +310,33 @@ export class App {
     ], e.clientX, e.clientY);
   }
 
+  // --- tools -----------------------------------------------------------------------
+  /**
+   * The active tool or null; at most one at a time. A tool is
+   * {id, hint, activate?, deactivate?, down?/move?/up? (drag), click?, hover?, keyDown?}.
+   */
+  setTool(tool) {
+    if (this.tool === tool) return;
+    this.tool?.deactivate?.();
+    this.tool = tool;
+    tool?.activate?.();
+    this.viewer.canvas.style.cursor = tool ? 'crosshair' : '';
+    this.updateStatus();
+    this.viewer.requestRender();
+  }
+
+  toggleTool(tool) { this.setTool(this.tool?.id === tool.id ? null : tool); }
+
   // --- commands -----------------------------------------------------------------------
   cmd(id, label, shortcut, run, opts = {}) {
-    this.commands.set(id, { id, label, shortcut, run, ...opts });
+    this.commands.set(id, { id, label, keys: shortcut ? shortcut.split(',') : [], run, ...opts });
   }
 
   menuItem(id, extra = {}) {
     const c = this.commands.get(id);
     if (!c) return null;
     return {
-      label: t(c.label), shortcut: c.shortcut ? c.shortcut.split(',')[0] : '', icon: c.icon,
+      label: t(c.label), shortcut: c.keys[0] || '', icon: c.icon,
       checked: c.checked ? c.checked() : false, disabled: c.enabled ? !c.enabled() : false, run: () => this.run(id), ...extra,
     };
   }
@@ -332,137 +348,6 @@ export class App {
     if (c.needsSelection && !this.state.selection.size) { toast(t('msg.noSelection')); return; }
     c.run();
     this.toolbar?.refresh();
-  }
-
-  registerCommands() {
-    this.commands = new Map();
-    const C = this.cmd.bind(this);
-    const sel = () => this.state.selection;
-    const S = { needsSelection: true };
-    // File
-    C('open', 'cmd.open', 'Ctrl+O', () => this.openDialog(true), { icon: 'open' });
-    C('add', 'cmd.add', 'Ctrl+M', () => this.openDialog(false), { icon: 'add' });
-    C('demo', 'cmd.demo', '', () => this.loadDemo(), { icon: 'model' });
-    C('save', 'cmd.save', 'Ctrl+S', () => this.saveProject(), { icon: 'save', needsModel: true });
-    C('closeAll', 'cmd.closeAll', '', () => this.closeAll());
-    C('screenshot', 'cmd.screenshot', '', () => download(`OpenZoom_${stamp()}.png`, dataUrlToBlob(this.issues.snapshot())), { icon: 'camera' });
-    C('exportBcf', 'cmd.exportBcf', '', () => this.exportBcf('2.1'), { icon: 'export' });
-    C('importBcf', 'cmd.importBcf', '', () => this.importBcf(), { icon: 'import' });
-    // View
-    C('restore', 'cmd.restore', 'Ctrl+R', () => { this.state.restoreView(); this.smartViews.activeGuid = null; this.smartViewsPanel.render(); }, { icon: 'restore' });
-    C('floorplans', 'cmd.floorplans', 'Alt+F', () => this.toggleFloorPlan(), { icon: 'floor', checked: () => !!this.floorPlanStorey, needsModel: true });
-    for (const c of CATEGORIES) {
-      C(`cat.${c.key}`, `cat.${c.key}`, `Alt+${c.accel}`, () => this.state.toggleCategory(c.key), { checked: () => this.state.categoryVisible(c.key), icon: c.key === 'spaces' ? 'space' : c.key === 'openings' ? 'opening' : undefined });
-    }
-    C('showAll', 'cmd.showAll', 'Alt+A', () => this.state.showAll(), { icon: 'eye' });
-    C('hideAll', 'cmd.hideAll', 'Alt+H', () => this.state.hideAll(), { icon: 'eyeOff' });
-    C('toggleSel', 'cmd.toggleSel', 'Space', () => this.state.toggle(sel()), { icon: 'eyeOff', ...S });
-    C('hideSel', 'cmd.hideSel', '', () => this.state.hide(sel()), { icon: 'eyeOff', ...S });
-    C('transparent', 'cmd.transparent', 'Ctrl+T,Shift+T', () => this.state.toggleTransparent(sel()), { icon: 'ghost', ...S });
-    C('isolate', 'cmd.isolate', 'Shift+I', () => this.state.isolate(sel()), { icon: 'isolate', ...S });
-    C('ghostOthers', 'cmd.ghostOthers', 'Shift+G', () => this.state.ghostOthers(sel()), { icon: 'ghost', ...S });
-    C('undo', 'cmd.undo', 'Ctrl+Z', () => this.state.undo(), { icon: 'undo', enabled: () => this.state.undoStack.length > 0 });
-    C('redo', 'cmd.redo', 'Ctrl+Y,Ctrl+Shift+Z', () => this.state.redo(), { icon: 'redo', enabled: () => this.state.redoStack.length > 0 });
-    C('edges', 'cmd.edges', '', () => { this.settings.set('edges', !this.settings.get('edges')); this.applySettings(); }, { icon: 'edges', checked: () => this.settings.get('edges') !== false });
-    C('legend', 'cmd.legend', '', () => { this.settings.set('legend', !this.settings.get('legend')); this.renderLegend(); }, { icon: 'legend', checked: () => this.settings.get('legend') !== false });
-    C('selectAll', 'cmd.selectAll', 'Ctrl+A', () => this.state.select(this.state.visibleGids()));
-    C('deselect', 'cmd.deselect', 'Escape', () => this.state.clearSelection());
-    C('selectSameType', 'cmd.selectSameType', '', () => this.selectSame('typeName'), S);
-    C('selectSameClass', 'cmd.selectSameClass', '', () => this.selectSame('cls'), S);
-    C('copyGuid', 'cmd.copyGuid', '', () => this.copyText([...sel()].map((g) => this.models.element(g)?.guid).filter(Boolean).join('\n')), { icon: 'copy', ...S });
-    C('properties', 'cmd.properties', '', () => this.showTab('navigation'), { icon: 'info' });
-    // Navigate
-    C('orbit', 'cmd.orbit', '', () => this.controls.setMode('orbit'), { icon: 'orbit', checked: () => this.controls.mode === 'orbit' });
-    C('fly', 'cmd.fly', '', () => this.controls.setMode('fly'), { icon: 'fly', checked: () => this.controls.mode === 'fly' });
-    C('fit', 'cmd.fit', 'Home', () => this.zoomToFit(), { icon: 'fit' });
-    C('zoomSel', 'cmd.zoomSel', 'End', () => this.zoomToSelection(), { icon: 'zoomSel', ...S });
-    C('perpendicular', 'cmd.perpendicular', 'Ctrl+=', () => this.lookPerpendicular());
-    const views = [['front', '2'], ['back', '8'], ['left', '4'], ['right', '6'], ['top', '5'], ['bottom', '0'], ['iso', '1'], ['isoSE', '3'], ['isoNW', '7'], ['isoNE', '9']];
-    for (const [v, k] of views) C(v, `cmd.${v}`, `Ctrl+${k}`, () => this.setView(v), { icon: v.startsWith('iso') ? 'iso' : 'cube', needsModel: true });
-    C('perspective', 'cmd.perspective', '', () => this.controls.setProjection('perspective'), { icon: 'persp', checked: () => !this.controls.isOrtho });
-    C('orthographic', 'cmd.orthographic', '', () => this.controls.setProjection('orthographic'), { icon: 'ortho', checked: () => this.controls.isOrtho });
-    C('level', 'cmd.level', 'Ctrl+L', () => this.controls.levelCamera());
-    // My view
-    C('showMyView', 'cmd.showMyView', 'Alt+V', () => { if (!this.state.showMyView()) toast(t('msg.myViewEmpty')); }, { icon: 'myview' });
-    C('setMyView', 'cmd.setMyView', 'Alt+=', () => this.state.setMyView([...sel()]));
-    C('addMyView', 'cmd.addMyView', 'Alt++', () => this.state.addToMyView(sel()), S);
-    C('removeMyView', 'cmd.removeMyView', 'Alt+-', () => this.state.removeFromMyView(sel()), S);
-    C('clearMyView', 'cmd.clearMyView', 'Alt+*', () => this.state.clearMyView());
-    // Validate / measure
-    C('clashes', 'cmd.clashes', '', () => this.showTab('clashes'), { icon: 'clash' });
-    C('newClash', 'cmd.newClash', '', () => { this.showTab('clashes'); this.clashesPanel.newTest(); }, { icon: 'plus' });
-    const mm = (mode) => () => this.measure.setMode(this.measure.mode === mode ? null : mode);
-    C('dimension', 'cmd.dimension', 'Ctrl+Alt+M', mm('dimension'), { icon: 'ruler', checked: () => this.measure.mode === 'dimension', needsModel: true });
-    C('distance', 'cmd.distance', '', mm('distance'), { icon: 'distance', checked: () => this.measure.mode === 'distance', needsModel: true });
-    C('angle', 'cmd.angle', '', mm('angle'), { icon: 'angle', checked: () => this.measure.mode === 'angle', needsModel: true });
-    C('area', 'cmd.area', '', mm('area'), { icon: 'area', checked: () => this.measure.mode === 'area', needsModel: true });
-    C('elevation', 'cmd.elevation', 'Ctrl+Alt+H', mm('elevation'), { icon: 'elevation', checked: () => this.measure.mode === 'elevation', needsModel: true });
-    C('mindist', 'cmd.mindist', '', mm('mindist'), { icon: 'mindist', checked: () => this.measure.mode === 'mindist', needsModel: true });
-    C('clearDims', 'cmd.clearDims', '', () => this.measure.clear(), { icon: 'trash' });
-    // Sectioning
-    C('sectionPlane', 'cmd.sectionPlane', 'Ctrl+Alt+P', () => this.sections.startCreatePlane(), { icon: 'plane', needsModel: true });
-    C('sectionX', 'cmd.sectionX', '', () => this.sections.addAxisPlane('x'), { needsModel: true });
-    C('sectionY', 'cmd.sectionY', '', () => this.sections.addAxisPlane('y'), { needsModel: true });
-    C('sectionZ', 'cmd.sectionZ', '', () => this.sections.addAxisPlane('z'), { needsModel: true });
-    C('sectionBox', 'cmd.sectionBox', 'Ctrl+B', () => this.createSectionBox(), { icon: 'box', needsModel: true, checked: () => !!this.sections.box });
-    C('sectionBoxSel', 'cmd.sectionBoxSel', '', () => this.createSectionBox(true), { icon: 'box', ...S });
-    C('deletePlane', 'cmd.deletePlane', 'Delete', () => this.sections.deleteSelected());
-    C('deleteSections', 'cmd.deleteSections', 'Ctrl+Delete', () => { this.sections.deleteAll(); this.floorPlanStorey = null; }, { icon: 'trash' });
-    C('suspend', 'cmd.suspend', 'Ctrl+P', () => this.sections.toggleSuspend(), { icon: 'pause', checked: () => this.sections.suspended });
-    C('showPlanes', 'cmd.showPlanes', 'Alt+P', () => this.sections.toggleHelpers(), { checked: () => this.sections.helpersVisible });
-    C('flipPlane', 'cmd.flipPlane', '', () => this.sections.flipSelected(), { icon: 'flip', enabled: () => !!this.sections.selected });
-    // Extra
-    C('search', 'cmd.search', 'Ctrl+F', () => openSearch(this), { icon: 'search' });
-    C('issue', 'cmd.issue', 'Ctrl+I', () => this.createIssue(), { icon: 'issue' });
-    const ann = [['annLine', 'line', 'L'], ['annArrow', 'arrow', 'A'], ['annEllipse', 'ellipse', 'E'], ['annCloud', 'cloud', 'C'], ['annRect', 'rect', 'R'], ['annText', 'text', 'T']];
-    for (const [id, tool, k] of ann) C(id, `cmd.${id}`, `Ctrl+Alt+${k}`, () => this.annotations.setTool(this.annotations.tool === tool ? null : tool), { icon: 'annotate', checked: () => this.annotations.tool === tool, needsModel: true });
-    C('annClear', 'cmd.annClear', '', () => this.annotations.clear(), { icon: 'trash' });
-    C('settings', 'cmd.settings', '', () => openSettings(this), { icon: 'gear' });
-    C('shortcuts', 'cmd.shortcuts', 'F1', () => openShortcuts(this));
-    C('about', 'cmd.about', '', () => openAbout(this), { icon: 'info' });
-  }
-
-  // --- keyboard -----------------------------------------------------------------------
-  onKeyDown(e) {
-    const tag = (e.target.tagName || '').toLowerCase();
-    if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable) return;
-    if (document.querySelector('.modal-back')) return;
-    if (this.measure.keyDown(e) || this.annotations.keyDown(e)) { e.preventDefault(); return; }
-    const combo = comboOf(e);
-    // context dependent keys first
-    if (combo === 'Escape') {
-      if (this.sections.creating) { this.sections.creating = false; this.status(''); return; }
-      if (this.measure.active) { this.measure.setMode(null); this.toolbar.refresh(); return; }
-      if (this.controls.mode === 'fly') { this.controls.setMode('orbit'); return; }
-    }
-    if (combo === 'Space' && this.sections.toggleSelectedHelper()) { e.preventDefault(); return; }
-    if (combo === 'Delete' || combo === 'Backspace') {
-      if (this.measure.deleteSelected() || this.annotations.deleteSelected() || this.sections.deleteSelected()) { e.preventDefault(); return; }
-      if (combo === 'Delete' && this.state.selection.size) { this.state.hide(this.state.selection); return; }
-    }
-    if (combo === 'Ctrl+A' && this.sections.selected) { e.preventDefault(); return; }
-    if (combo === 'Tab' || combo === 'Shift+Tab') { e.preventDefault(); this.properties.cycle(combo === 'Tab' ? 1 : -1); return; }
-    if (combo === 'Ctrl+C') { if (this.properties.copySelected()) { e.preventDefault(); } else if (this.state.selection.size) { e.preventDefault(); this.run('copyGuid'); } return; }
-    if (combo === 'Ctrl+V') {
-      e.preventDefault();
-      navigator.clipboard?.readText().then((txt) => openSearch(this, txt)).catch(() => openSearch(this));
-      return;
-    }
-    if (combo === 'Ctrl+Delete' && this.tree.selectedModel) {
-      e.preventDefault();
-      this.removeModel(this.tree.selectedModel);
-      return;
-    }
-    for (const c of this.commands.values()) {
-      if (!c.shortcut) continue;
-      if (c.shortcut.split(',').some((s) => s === combo)) {
-        e.preventDefault();
-        e.stopPropagation();
-        this.run(c.id);
-        return;
-      }
-    }
-    if (this.controls.keyDown(e)) e.preventDefault();
   }
 
   // --- files --------------------------------------------------------------------------
@@ -530,18 +415,14 @@ export class App {
 
   hideProgress() { this.progressEl.classList.remove('show'); }
 
+  /** Close every model and start an empty project. */
   clearModels() {
+    this.setTool(null);
     for (const m of [...this.models.models]) this.models.remove(m);
-    this.state.selection.clear();
-    this.state.undoStack.length = 0;
-    this.state.redoStack.length = 0;
-    this.state.legend = null;
+    this.state.reset();
     this.sections.deleteAll();
     this.measure.clear();
     this.annotations.clear();
-    this.floorPlanStorey = null;
-    this.state.syncSelection();
-    this.renderLegend();
   }
 
   async closeAll() {
@@ -550,72 +431,19 @@ export class App {
   }
 
   async removeModel(model) {
-    if (await confirmDialog(t('cmd.remove'), t('msg.removeModel', { name: model.name }))) {
-      for (const gid of [...this.state.selection]) if (this.models.modelOf(gid) === model) this.state.selection.delete(gid);
-      this.state.forgetModel(model);
-      if (this.tree.selectedModel === model) this.tree.selectedModel = null;
-      this.models.remove(model);
-      this.state.syncSelection();
-      this.renderLegend();
-    }
+    if (await confirmDialog(t('cmd.remove'), t('msg.removeModel', { name: model.name }))) this.models.remove(model);
   }
 
-  /** Project file (.ozp): zip with the IFC files and project.json (views, issues, clashes, ...). */
   saveProject() {
-    const M = this.models;
-    const files = {};
-    const guidsOf = (set) => [...set].map((g) => M.element(g)?.guid).filter(Boolean);
-    const project = {
-      format: 'openzoom-project', version: 2, saved: new Date().toISOString(),
-      // unique zip paths: two models may share a file name
-      models: M.models.map((m, k) => ({ name: m.name, file: `models/${k + 1}_${m.name}`, visible: m.visible, state: this.state.serializeModel(m) })),
-      smartViews: this.smartViews.local,
-      clashTests: this.clashes.tests,
-      issues: this.issues.issues,
-      myView: guidsOf(this.state.myView),
-      view: {
-        camera: this.issues.captureViewpoint().camera,
-        revealed: [...this.state.revealed],
-        sections: this.sections.serialize(),
-      },
-    };
-    files['project.json'] = strToU8(JSON.stringify(project));
-    for (const pm of project.models) files[pm.file] = [M.models[project.models.indexOf(pm)].source, { level: 6 }];
-    const zip = zipSync(files);
-    const name = (M.models[0]?.project?.name || 'Projekt').replace(/[^\w\-äöüÄÖÜß ]+/g, '_');
-    download(`${name}.ozp`, zip, 'application/zip');
+    const name = (this.models.models[0]?.project?.name || 'Projekt').replace(/[^\w\-äöüÄÖÜß ]+/g, '_');
+    download(`${name}.ozp`, writeProject(this), 'application/zip');
     this.dirty = false;
     toast(t('msg.saved'));
   }
 
   async loadProject(file) {
-    const z = unzipSync(new Uint8Array(await file.arrayBuffer()));
-    const project = JSON.parse(strFromU8(z['project.json']));
     this.clearModels();
-    for (const m of project.models || []) {
-      const data = z[m.file || `models/${m.name}`];
-      if (!data) continue;
-      const model = await this.loadModel(new File([data], m.name));
-      if (!model) continue;
-      if (m.visible === false) { model.visible = false; model.group.visible = false; }
-      if (m.state) this.state.restoreModel(model, m.state);
-    }
-    if (project.smartViews) this.smartViews.importSets(project.smartViews);
-    if (project.clashTests) { this.clashes.tests = project.clashTests; this.clashes.changed(); }
-    if (project.issues) { this.issues.issues = project.issues; this.issues.changed(); }
-    if (project.myView) {
-      const s = new Set();
-      for (const g of project.myView) { const gid = this.models.findByGuid(g); if (gid >= 0) s.add(gid); }
-      this.state.myView = s;
-    }
-    const view = project.view;
-    if (view) {
-      // files saved before the revealed set kept two flags
-      this.state.revealed = new Set(view.revealed || [view.showSpaces && 'spaces', view.showOpenings && 'openings'].filter(Boolean));
-      this.state.changed();
-      this.sections.deserialize(view.sections);
-      if (view.camera) this.issues.applyCamera(view.camera);
-    } else if (project.viewpoint) this.issues.showViewpoint(project.viewpoint); // version 1 files
+    await readProject(this, file);
     this.dirty = false;
   }
 
@@ -697,12 +525,7 @@ export class App {
 
   /** Alt+F: floor plan of a storey = horizontal cut + top orthographic view. */
   async toggleFloorPlan() {
-    if (this.floorPlanStorey) {
-      this.sections.clearFloorPlan();
-      this.floorPlanStorey = null;
-      this.toolbar.refresh();
-      return;
-    }
+    if (this.sections.floorPlan) { this.sections.clearFloorPlan(); return; }
     let storey = null;
     for (const gid of this.state.selection) {
       const m = this.models.modelOf(gid);
@@ -719,12 +542,10 @@ export class App {
   enterFloorPlan(storeyEl) {
     const z = storeyZ(storeyEl);
     const y = z - (this.models.offset?.[1] || 0) + Number(this.settings.get('cutHeight') || 1.2);
-    this.sections.setFloorPlan(y);
-    this.floorPlanStorey = storeyEl;
+    this.sections.setFloorPlan(y, storeyEl);
     this.controls.setProjection('orthographic');
     this.controls.fitBox(this.models.visibleBox(), new THREE.Vector3(0, -1, 0), true, new THREE.Vector3(0, 0, -1));
     this.status(`${t('cmd.floorplans')}: ${storeyEl.name}`);
-    this.toolbar.refresh();
   }
 
   storeys() {
@@ -752,28 +573,6 @@ export class App {
     this.state.applyView(res.perModel, { legend: res.legend });
   }
 
-  renderLegend() {
-    const el = this.legendEl;
-    el.innerHTML = '';
-    const legend = this.state.legend;
-    if (!legend || this.settings.get('legend') === false) { el.classList.remove('show'); return; }
-    const entries = legend.entries;
-    el.classList.add('show');
-    el.appendChild(h('div.legend-title', legend.title || t('sv.legend')));
-    const list = h('div.legend-list');
-    for (const entry of entries.slice(0, 60)) {
-      const row = h('div.legend-row', { title: entry.label },
-        h('span.swatch', { style: { background: `rgb(${entry.color.join(',')})` } }),
-        h('span.legend-label', entry.label),
-        h('span.legend-count', String(entry.count)),
-        entry.takeoff !== null && entry.takeoff !== undefined ? h('span.legend-takeoff', this.fmtNum(entry.takeoff, 2)) : null);
-      row.addEventListener('click', (ev) => this.state.select(entry.gids, ev.ctrlKey ? 'add' : 'replace'));
-      list.appendChild(row);
-    }
-    if (entries.length > 60) list.appendChild(h('div.muted', `… ${entries.length - 60}`));
-    el.appendChild(list);
-  }
-
   drawAxes() {
     const c = this.axesEl;
     const g = c.getContext('2d');
@@ -790,49 +589,4 @@ export class App {
       g.fillText(n, cx + v.x * (r + 9), cy - v.y * (r + 9));
     }
   }
-}
-
-/**
- * Shortcut name of a key event. Letters and = + - * follow the keyboard layout
- * (e.key, so Ctrl+Z is Z on QWERTZ and AZERTY); digits use the physical key;
- * when Option/Alt turned e.key into another character (macOS) e.code is used.
- */
-function comboOf(e) {
-  let key;
-  const c = e.code || '';
-  const k = e.key || '';
-  if (/^[a-z]$/i.test(k)) key = k.toUpperCase();
-  else if (['=', '+', '-', '*'].includes(k)) key = k;
-  else if (c === 'Space') key = 'Space';
-  else if (/^Digit\d$/.test(c)) key = c.slice(5);
-  else if (/^Numpad\d$/.test(c)) key = c.slice(6);
-  else if (c === 'NumpadAdd') key = '+';
-  else if (c === 'NumpadSubtract') key = '-';
-  else if (c === 'NumpadMultiply') key = '*';
-  else if (/^Key[A-Z]$/.test(c)) key = c.slice(3);
-  else if (c === 'Equal') key = '=';
-  else if (c === 'Minus') key = '-';
-  else key = k.length === 1 ? k.toUpperCase() : k;
-  const symbol = ['=', '+', '-', '*'].includes(key);
-  const parts = [];
-  if (e.ctrlKey || e.metaKey) parts.push('Ctrl');
-  if (e.altKey) parts.push('Alt');
-  if (e.shiftKey && !symbol) parts.push('Shift');
-  parts.push(key);
-  return parts.join('+');
-}
-
-function stamp() {
-  const d = new Date();
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`;
-}
-
-export function dataUrlToBlob(url) {
-  const [head, data] = url.split(',');
-  const mime = head.match(/:(.*?);/)[1];
-  const bin = atob(data);
-  const arr = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-  return new Blob([arr], { type: mime });
 }

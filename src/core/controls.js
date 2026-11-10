@@ -40,7 +40,7 @@ export class Controls extends EventTarget {
     this.viewer.onBeforeRender.push(() => this.tick());
     this.lastTick = performance.now();
     this.pointers = new Map();
-    this.interceptors = []; // tools that may take over a drag: {down(e)->bool, move(e), up(e), hover?(e)}
+    this.interceptors = []; // grips that may take over a drag: {down(e)->bool, move(e), up(e)}
     this.captured = null;
   }
 
@@ -58,7 +58,9 @@ export class Controls extends EventTarget {
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     this.stopAnimation();
     if (e.button === 0) {
-      for (const it of this.interceptors) {
+      // the active tool (app.setTool) gets the first chance, then section grips
+      const tool = this.app.tool?.down ? [this.app.tool] : [];
+      for (const it of [...tool, ...this.interceptors]) {
         if (it.down(e)) { this.captured = it; return; }
       }
     }
@@ -83,7 +85,6 @@ export class Controls extends EventTarget {
     if (this.captured) { this.captured.move(e); this.viewer.requestRender(); return; }
     const d = this.drag;
     if (!d) {
-      for (const it of this.interceptors) it.hover?.(e);
       this.dispatchEvent(new CustomEvent('hover', { detail: e }));
       return;
     }

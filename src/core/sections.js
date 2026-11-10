@@ -18,7 +18,7 @@ export class Sections extends EventTarget {
     this.selected = null; // plane entry or null
     this.helpersVisible = true;
     this.suspended = false;
-    this.creating = false;
+    this.floorPlan = null; // plane entry of the floor plan, with its storey
     this.drag = null;
     app.controls.interceptors.push(this);
     app.controls.addEventListener('ctrlwheel', (e) => this.onCtrlWheel(e.detail.delta));
@@ -29,9 +29,16 @@ export class Sections extends EventTarget {
   get radius() { return this.app.controls.sceneRadius || 50; }
 
   // --- planes -------------------------------------------------------------------
-  startCreatePlane() {
-    this.creating = true;
-    this.app.status(this.app.t('status.clickSurfacePlane'));
+  /** Tool for app.setTool: a click on a surface puts a plane there. */
+  get planeTool() {
+    return {
+      id: 'section.plane', hint: 'status.clickSurfacePlane',
+      click: (e) => {
+        const hit = this.viewer.pick(e.clientX, e.clientY, this.app.models.models);
+        if (hit) this.addPlane(hit.point, hit.normal);
+        this.app.setTool(null);
+      },
+    };
   }
 
   /**
@@ -254,13 +261,6 @@ export class Sections extends EventTarget {
 
   // --- pointer interaction (controls interceptor) --------------------------------------
   down(e) {
-    if (this.creating) {
-      const hit = this.app.viewer.pick(e.clientX, e.clientY, this.app.models.models);
-      this.creating = false;
-      this.app.status('');
-      if (hit) this.addPlane(hit.point, hit.normal);
-      return true;
-    }
     if (e.shiftKey || e.altKey) return false;
     const ray = this.viewer.rayFrom(e.clientX, e.clientY).clone();
     if (this.box && this.box.group.visible) {
@@ -343,29 +343,31 @@ export class Sections extends EventTarget {
 
   get active() { return this.planes.length > 0 || !!this.box; }
 
-  /** Floor plan: horizontal cut at the given height, keep everything below. */
-  setFloorPlan(height) {
+  /** Floor plan of a storey: horizontal cut at the given height, keep everything below. */
+  setFloorPlan(height, storey) {
     this.clearFloorPlan();
-    if (height === null || height === undefined) return;
     const box = this.app.models.visibleBox();
     const anchor = box.isEmpty() ? new THREE.Vector3() : box.getCenter(new THREE.Vector3());
     anchor.y = height;
     const entry = this.addPlane(anchor, new THREE.Vector3(0, 1, 0), false);
-    entry.floorPlan = true;
+    entry.storey = storey;
     entry.helperVisible = false;
     this.placeHelper(entry);
     this.floorPlan = entry;
+    this.update();
   }
 
   clearFloorPlan() {
     if (this.floorPlan) this.removePlane(this.floorPlan);
-    this.floorPlan = null;
   }
+
+  /** Storey element of the floor plan shown, or null. */
+  get floorPlanStorey() { return this.floorPlan?.storey ?? null; }
 
   // --- project file ---------------------------------------------------------------------
   serialize() {
     return {
-      planes: this.planes.filter((p) => !p.floorPlan).map((p) => ({
+      planes: this.planes.filter((p) => p !== this.floorPlan).map((p) => ({
         normal: p.plane.normal.toArray(), constant: p.plane.constant, anchor: p.anchor.toArray(), helperVisible: p.helperVisible,
       })),
       box: this.box ? { min: this.box.min.toArray(), max: this.box.max.toArray() } : null,
@@ -373,7 +375,7 @@ export class Sections extends EventTarget {
     };
   }
 
-  deserialize(s) {
+  load(s) {
     this.deleteAll();
     if (!s) return;
     for (const p of s.planes || []) {

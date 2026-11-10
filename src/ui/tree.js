@@ -2,7 +2,7 @@ import { h, showMenu } from './dom.js';
 import { icon } from './icons.js';
 import { t, getLanguage } from '../i18n.js';
 import { classLabel, SPATIAL, CATEGORY_COLORS } from '../core/ifc-classes.js';
-import { materialNames, storeyZ } from '../core/props.js';
+import { materialNames, storeyZ, elementMatches } from '../core/props.js';
 
 const ROW_H = 22;
 
@@ -12,15 +12,14 @@ export class TreePanel {
     this.app = app;
     this.mode = localStorage.getItem('oz.treeMode') || 'spatial';
     this.expanded = new Set();
-    this.selectedKeys = new Set();
-    this.selectedModel = null;
+    this.selectedKeys = new Set(); // highlighted model / group rows
     this.filter = '';
     this.rows = [];
     this.lastClicked = -1;
 
     const modeSel = h('select.input.small', { on: { change: (e) => { this.mode = e.target.value; localStorage.setItem('oz.treeMode', this.mode); this.rebuild(); } } },
       ...['spatial', 'class', 'type', 'material', 'storey'].map((m) => h('option', { value: m, selected: m === this.mode }, t(`tree.${m === 'class' ? 'class' : m}`))));
-    const filter = h('input.input.small', { type: 'search', placeholder: t('tree.filter'), on: { input: (e) => { this.filterRaw = e.target.value.trim(); this.filter = this.filterRaw.toLowerCase(); this.flatten(); } } });
+    const filter = h('input.input.small', { type: 'search', placeholder: t('tree.filter'), on: { input: (e) => { this.filter = e.target.value.trim().toLowerCase(); this.flatten(); } } });
     const collapse = h('button.icon-btn', { title: '−', html: icon('minus', 14), on: { click: () => { this.expanded.clear(); this.flatten(); } } });
     this.scroll = h('div.tree-scroll', { tabindex: 0 });
     this.spacer = h('div.tree-spacer');
@@ -33,10 +32,11 @@ export class TreePanel {
     const M = app.models;
     M.addEventListener('changed', () => this.rebuild());
     M.addEventListener('added', (e) => this.expanded.add(`m${e.detail.id}`));
+    M.addEventListener('removed', (e) => this.selectedKeys.delete(`m${e.detail.id}`));
     app.state.addEventListener('change', () => this.renderRows());
     app.state.addEventListener('selection', () => {
-      // a selection made elsewhere (3D view, search) ends the model-row selection used by Ctrl+Delete
-      if (!this.ownSelect) { this.selectedModel = null; this.selectedKeys.clear(); }
+      // a selection made elsewhere (3D view, search) ends the model / group row highlight
+      if (!this.ownSelect) this.selectedKeys.clear();
       this.renderRows();
     });
     this.rebuild();
@@ -127,8 +127,7 @@ export class TreePanel {
       const f = this.filter;
       outer: for (const m of this.app.models.models) {
         for (let i = 0; i < m.count; i++) {
-          const el = m.elements[i];
-          if ((el.name || '').toLowerCase().includes(f) || el.cls.toLowerCase().includes(f) || el.guid === this.filterRaw || (el.typeName || '').toLowerCase().includes(f) || (el.longName || '').toLowerCase().includes(f)) {
+          if (elementMatches(m.elements[i], f)) {
             rows.push({ node: this.elNode(m, i, false), depth: 0 });
             if (rows.length > 5000) break outer;
           }
@@ -235,7 +234,6 @@ export class TreePanel {
   toggleVisibility(node, vis) {
     if (node.kind === 'model' && !node.model.visible) {
       node.model.visible = true;
-      node.model.group.visible = true;
       this.app.state.changed();
       return;
     }
@@ -247,7 +245,6 @@ export class TreePanel {
   onRowClick(r, node, e) {
     const st = this.app.state;
     this.ownSelect = true;
-    this.selectedModel = node.kind === 'model' ? node.model : null;
     let gids = this.nodeGids(node);
     if (e.shiftKey && this.lastClicked >= 0) {
       const [a, b] = [Math.min(this.lastClicked, r), Math.max(this.lastClicked, r)];
@@ -273,13 +270,19 @@ export class TreePanel {
     const items = [c('toggleSel'), c('isolate'), c('transparent'), c('ghostOthers'), c('showAll'), '-', c('zoomSel'), c('sectionBoxSel'), '-', c('addMyView'), c('removeMyView')];
     if (node.kind === 'model') {
       items.push('-',
-        { label: node.model.visible ? t('ui.hide') : t('ui.show'), icon: node.model.visible ? 'eyeOff' : 'eye', run: () => { node.model.visible = !node.model.visible; node.model.group.visible = node.model.visible; app.state.changed(); } },
+        { label: node.model.visible ? t('ui.hide') : t('ui.show'), icon: node.model.visible ? 'eyeOff' : 'eye', run: () => { node.model.visible = !node.model.visible; app.state.changed(); } },
         { label: t('cmd.remove'), icon: 'trash', shortcut: 'Ctrl+Delete', run: () => app.removeModel(node.model) });
     }
     showMenu(items, e.clientX, e.clientY);
   }
 
   onKey(e) {
+    if (e.key === 'Delete' && (e.ctrlKey || e.metaKey)) {
+      // Ctrl+Delete on a highlighted model row removes the model (elsewhere: delete all sections)
+      const model = this.app.models.models.find((m) => this.selectedKeys.has(`m${m.id}`));
+      if (model) { e.preventDefault(); e.stopPropagation(); this.app.removeModel(model); }
+      return;
+    }
     if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter'].includes(e.key)) return;
     e.preventDefault();
     e.stopPropagation();

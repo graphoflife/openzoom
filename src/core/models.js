@@ -31,7 +31,6 @@ export class Model {
     this.colors = new Uint8Array(this.texW * this.texH * 4); // rgb override, a = override on
     this.flagTex = makeTex(this.flags, this.texW, this.texH);
     this.colorTex = makeTex(this.colors, this.texW, this.texH);
-    this.visible = true;
     this.group = new THREE.Group();
     this.group.name = this.name;
     this.meshes = [];
@@ -89,6 +88,14 @@ export class Model {
       }
       el.category = categoryOf(el, ancestors);
     }
+    // elements with geometry per category, for the Alt+<key> toggles
+    this.byCategory = new Map();
+    for (let i = 0; i < this.count; i++) {
+      const k = els[i].category;
+      if (!k || !this.hasGeom[i]) continue;
+      if (!this.byCategory.has(k)) this.byCategory.set(k, []);
+      this.byCategory.get(k).push(i);
+    }
   }
 
   resetState() {
@@ -100,6 +107,10 @@ export class Model {
     this.colors.fill(0);
     this.touch();
   }
+
+  /** Model switched on/off as a whole (the tree's model checkbox). */
+  get visible() { return this.group.visible; }
+  set visible(v) { this.group.visible = v; }
 
   touch() {
     this.flagTex.needsUpdate = true;
@@ -330,6 +341,22 @@ export class ModelManager extends EventTarget {
       for (const i of m.descendants(gid - m.base, [], skip)) out.add(m.base + i);
     }
     return out;
+  }
+
+  /** Reference of an element that survives reloading: its GlobalId, or "file#expressId" without one. */
+  refOf(gid) {
+    const m = this.modelOf(gid);
+    const el = m?.elements[gid - m.base];
+    return el ? el.guid || `${m.name}#${el.id}` : null;
+  }
+
+  /** gid of an element reference (see refOf), -1 when it is not loaded. */
+  findByRef(ref) {
+    const hash = ref?.lastIndexOf('#') ?? -1; // GlobalIds never contain '#'
+    if (hash < 0) return ref ? this.findByGuid(ref) : -1;
+    const m = this.models.find((x) => x.name === ref.slice(0, hash));
+    const i = m ? m.elements.findIndex((el) => el.id === Number(ref.slice(hash + 1))) : -1;
+    return i >= 0 ? m.base + i : -1;
   }
 
   findByGuid(guid) {

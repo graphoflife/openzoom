@@ -1,4 +1,5 @@
 import { classToZoomType } from './ifc-classes.js';
+import { t } from '../i18n.js';
 
 // Property access shared by the properties panel, smart views, lists and search.
 // Property "types" follow the BIMcollab .bcsv vocabulary:
@@ -134,7 +135,7 @@ export function materialNames(model, el) {
 export function materialProps(model, i) {
   const el = model.elements[i];
   const rows = fixedRows('Material', model, i);
-  if (el.mat >= 0) model.materials[el.mat].layers.forEach((l, k) => rows.push([`Schicht ${k + 1}`, `${l.name} (${l.thickness})`, model.units.length]));
+  if (el.mat >= 0) model.materials[el.mat].layers.forEach((l, k) => rows.push([t('props.layer', { n: k + 1 }), `${l.name} (${l.thickness})`, model.units.length]));
   return rows;
 }
 
@@ -209,6 +210,11 @@ export function getValue(model, i, prop) {
     for (const p of ps.p) if (nameKey(p[0]) === name) return p[1] === null ? undefined : p[1];
   }
   return undefined;
+}
+
+/** Text search over names, GUID, class and type (tree filter, Ctrl+F); `q` is lower case. */
+export function elementMatches(el, q) {
+  return el.guid.toLowerCase() === q || [el.name, el.longName, el.cls, el.typeName, el.objType, el.tag, el.desc].some((s) => s && s.toLowerCase().includes(q));
 }
 
 /** Precision of numbers in value texts; smart view comparisons use the same, so a shown value matches. */

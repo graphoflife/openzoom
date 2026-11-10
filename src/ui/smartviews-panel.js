@@ -2,7 +2,8 @@ import { h, showMenu, clear, dialog, promptDialog, confirmDialog, download, pick
 import { icon } from './icons.js';
 import { t } from '../i18n.js';
 import { ZOOM_TYPES, classToZoomType } from '../core/ifc-classes.js';
-import { ACTIONS, CONDITIONS, NO_VALUE_CONDITIONS, exportBcsv, importBcsv, rule, uuid, evaluate } from '../core/smartviews.js';
+import { ACTIONS, COLOR_ACTIONS, CONDITIONS, NO_VALUE_CONDITIONS, exportBcsv, importBcsv, rule, normalizeRule, evaluate } from '../core/smartviews.js';
+import { uuid } from '../core/util.js';
 import { openPropertyPicker, openValuePicker, propertyText, closePicker } from './property-picker.js';
 
 /** Smart view sets tree with apply-on-click, editor, .bcsv import/export. */
@@ -170,6 +171,7 @@ export class SmartViewsPanel {
     if (!v) return;
     const readonly = !!set?.builtin;
     const draft = JSON.parse(JSON.stringify(v));
+    draft.rules = draft.rules.map(normalizeRule); // the rows edit these objects in place
     const typeOptions = this.elementTypeOptions();
     const nameInput = h('input.input', { value: draft.title });
     const descInput = h('textarea.input', { rows: 2 }, draft.description || '');
@@ -246,15 +248,13 @@ export class SmartViewsPanel {
   }
 
   ruleRow(draft, r, k, rerender, typeOptions) {
-    const p = r.property || (r.property = { type: 'Summary', psetName: 'Summary', name: 'Model', valueType: 'StringValue', unit: 'None' });
-    const c = r.condition || (r.condition = { type: 'StringIsDefined', value: '' });
-    const a = r.action || (r.action = { type: 'Add' });
+    const { property: p, condition: c, action: a } = r;
     const sel = (options, value, onChange, labelFn = (x) => x) => {
       const s = h('select.input.small', ...options.map((o) => h('option', { value: o, selected: o === value }, labelFn(o))));
       s.addEventListener('change', () => onChange(s.value));
       return s;
     };
-    const cur = r.ifcType || 'Any';
+    const cur = r.ifcType;
     const known = cur === 'Any' || typeOptions.present.includes(cur) || typeOptions.rest.includes(cur);
     const typeSel = h('select.input.small',
       h('option', { value: 'Any', selected: cur === 'Any' }, 'Any'),
@@ -270,17 +270,17 @@ export class SmartViewsPanel {
         const changedType = np.valueType !== p.valueType;
         Object.assign(p, np);
         if (changedType || !CONDITIONS[p.valueType].includes(c.type)) {
-          c.type = { StringValue: 'Is', DoubleValue: 'Equals', BoolValue: 'BooleanTrue', LogicalValue: 'LogicalTrue' }[p.valueType];
+          c.type = CONDITIONS[p.valueType][0];
         }
         rerender();
       },
     }));
-    const vtype = sel(Object.keys(CONDITIONS), p.valueType || 'StringValue', (x) => {
+    const vtype = sel(Object.keys(CONDITIONS), p.valueType, (x) => {
       p.valueType = x;
       if (!CONDITIONS[x].includes(c.type)) c.type = CONDITIONS[x][0];
       rerender();
     }, (x) => t(`vtype.${x}`));
-    const conds = CONDITIONS[p.valueType || 'StringValue'];
+    const conds = CONDITIONS[p.valueType];
     const cond = sel(conds.includes(c.type) ? conds : [c.type, ...conds], c.type, (x) => { c.type = x; rerender(); }, (x) => t(`cond.${x}`));
     const noValue = NO_VALUE_CONDITIONS.has(c.type);
     const value = h('input.input.small', { value: c.value || '', disabled: noValue });
@@ -291,8 +291,8 @@ export class SmartViewsPanel {
       c.value = (c.type === 'Or' || c.type === 'Nor') && c.value ? `${c.value};${val}` : val;
       value.value = c.value;
     }));
-    const act = sel(ACTIONS, a.type, (x) => { a.type = x; if (['SetColored', 'AddSetColored'].includes(x) && a.r === undefined) Object.assign(a, { r: 220, g: 40, b: 40 }); rerender(); }, (x) => t(`act.${x}`));
-    const hasColor = ['SetColored', 'AddSetColored'].includes(a.type);
+    const act = sel(ACTIONS, a.type, (x) => { a.type = x; if (COLOR_ACTIONS.has(x) && a.r === undefined) Object.assign(a, { r: 220, g: 40, b: 40 }); rerender(); }, (x) => t(`act.${x}`));
+    const hasColor = COLOR_ACTIONS.has(a.type);
     const color = h('input', { type: 'color', value: rgbToHex([a.r ?? 220, a.g ?? 40, a.b ?? 40]), style: { visibility: hasColor ? 'visible' : 'hidden' } });
     color.addEventListener('input', () => { const [rr, gg, bb] = hexToRgb(color.value); Object.assign(a, { r: rr, g: gg, b: bb }); });
     const move = (d) => {

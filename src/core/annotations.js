@@ -18,23 +18,22 @@ export class Annotations {
   constructor(app) {
     this.app = app;
     this.viewer = app.viewer;
-    this.tool = null;
     this.items = [];
     this.selected = null;
     this.drag = null;
-    app.controls.interceptors.unshift(this);
   }
 
-  get active() { return !!this.tool; }
-
-  setTool(tool) {
-    this.tool = tool;
-    this.app.status(tool ? this.app.t('status.annotate') : '');
-    this.viewer.canvas.style.cursor = tool ? 'crosshair' : '';
+  /** The tool for app.setTool that draws one kind of markup by dragging. */
+  tool(kind) {
+    return {
+      id: `ann.${kind}`, hint: 'status.annotate',
+      down: (e) => this.down(e, kind),
+      move: (e) => this.move(e),
+      up: () => this.up(),
+    };
   }
 
-  down(e) {
-    if (!this.tool) return false;
+  down(e, kind) {
     const hit = this.viewer.pick(e.clientX, e.clientY, this.app.models.models);
     const cam = this.viewer.camera;
     const camDir = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion);
@@ -55,7 +54,7 @@ export class Annotations {
     if (v.lengthSq() < 1e-6) v = new THREE.Vector3(0, 0, -1).projectOnPlane(normal);
     v.normalize();
     const u = new THREE.Vector3().crossVectors(v, normal).normalize();
-    this.drag = { tool: this.tool, plane, origin: point, u, v, end: point.clone(), obj: null };
+    this.drag = { kind, plane, origin: point, u, v, end: point.clone(), obj: null };
     return true;
   }
 
@@ -76,9 +75,9 @@ export class Annotations {
     this.drag = null;
     if (!d) return;
     disposeLine(this.viewer, d.obj);
-    if (d.tool === 'text') {
+    if (d.kind === 'text') {
       const text = await promptDialog(this.app.t('cmd.annText'), this.app.t('cmd.annText'), '');
-      if (text) this.addItem({ tool: 'text', text, origin: d.origin.clone(), end: d.end.clone(), plane: d.plane, u: d.u, v: d.v });
+      if (text) this.addItem({ kind: 'text', text, origin: d.origin.clone(), end: d.end.clone(), plane: d.plane, u: d.u, v: d.v });
       return;
     }
     if (d.origin.distanceTo(d.end) < 1e-3) return;
@@ -86,13 +85,13 @@ export class Annotations {
   }
 
   addItem(it) {
-    it.obj = it.tool === 'text' ? null : this.build(it);
+    it.obj = it.kind === 'text' ? null : this.build(it);
     if (it.obj) this.viewer.overlay.add(it.obj);
-    if (it.tool === 'text' || it.tool === 'arrow') {
+    if (it.kind === 'text' || it.kind === 'arrow') {
       const el = document.createElement('div');
       el.className = 'ann-label';
       el.textContent = it.text || '';
-      if (it.tool === 'text') {
+      if (it.kind === 'text') {
         el.addEventListener('pointerdown', (ev) => { ev.stopPropagation(); this.select(it); });
         it.label = this.viewer.addLabel(el, it.origin.clone());
       }
@@ -108,21 +107,21 @@ export class Annotations {
     const a = rel.dot(u), b = rel.dot(v);
     const P = (x, y) => origin.clone().addScaledVector(u, x).addScaledVector(v, y);
     let pts = [];
-    if (d.tool === 'line') pts = [origin, end];
-    else if (d.tool === 'arrow') {
+    if (d.kind === 'line') pts = [origin, end];
+    else if (d.kind === 'arrow') {
       const len = Math.hypot(a, b) || 1;
       const dx = a / len, dy = b / len;
       const s = Math.min(len * 0.25, this.app.controls.worldPerPixel(end) * 18);
       const left = P(a - s * (dx * 0.87 - dy * 0.5), b - s * (dy * 0.87 + dx * 0.5));
       const right = P(a - s * (dx * 0.87 + dy * 0.5), b - s * (dy * 0.87 - dx * 0.5));
       pts = [origin, end, left, end, right];
-    } else if (d.tool === 'rect') pts = [P(0, 0), P(a, 0), P(a, b), P(0, b), P(0, 0)];
-    else if (d.tool === 'ellipse') {
+    } else if (d.kind === 'rect') pts = [P(0, 0), P(a, 0), P(a, b), P(0, b), P(0, 0)];
+    else if (d.kind === 'ellipse') {
       for (let k = 0; k <= 64; k++) {
         const t = (k / 64) * Math.PI * 2;
         pts.push(P(a / 2 + (a / 2) * Math.cos(t), b / 2 + (b / 2) * Math.sin(t)));
       }
-    } else if (d.tool === 'cloud') {
+    } else if (d.kind === 'cloud') {
       const corners = [[0, 0], [a, 0], [a, b], [0, b], [0, 0]];
       const r = Math.max(Math.min(Math.abs(a), Math.abs(b)) / 8, 1e-3);
       for (let k = 0; k < 4; k++) {
@@ -165,11 +164,6 @@ export class Annotations {
   }
 
   clear() { for (const it of [...this.items]) this.remove(it); }
-
-  keyDown(e) {
-    if (e.key === 'Escape' && this.tool) { this.setTool(null); this.app.toolbar?.refresh(); return true; }
-    return false;
-  }
 
   /** Draw all HTML labels (dimensions, elevations, texts) into a snapshot canvas. */
   drawOnto(g, w, h) {

@@ -48,20 +48,21 @@ export class Measure extends EventTarget {
     this.snapItem.hidden = true;
   }
 
-  get active() { return !!this.mode; }
-
-  setMode(mode) {
-    this.cancelPending();
-    this.mode = mode;
-    this.snap.visible = false;
-    this.snapItem.hidden = true;
-    this.dispatchEvent(new Event('mode'));
-    const hints = {
-      dimension: 'status.dimension', distance: 'status.distance', angle: 'status.angle', area: 'status.area',
-      elevation: 'status.elevation', mindist: 'status.mindist',
+  /** The tool for app.setTool of one measure mode (dimension, distance, angle, area, elevation, mindist). */
+  tool(mode) {
+    return {
+      id: `measure.${mode}`, hint: `status.${mode}`,
+      activate: () => { this.mode = mode; },
+      deactivate: () => {
+        this.cancelPending();
+        this.mode = null;
+        this.snap.visible = false;
+        this.snapItem.hidden = true;
+      },
+      click: (e) => this.click(e),
+      hover: (e) => this.hover(e),
+      keyDown: (e) => this.keyDown(e),
     };
-    this.app.status(mode ? this.app.t(hints[mode]) : '');
-    this.viewer.requestRender();
   }
 
   cancelPending() {
@@ -153,14 +154,10 @@ export class Measure extends EventTarget {
     }
   }
 
+  /** Enter closes an area, Escape drops unfinished points (a second Escape ends the tool). */
   keyDown(e) {
-    if (!this.mode) return false;
     if (e.key === 'Enter' && this.mode === 'area' && this.pending.length >= 3) { this.finishArea(); return true; }
-    if (e.key === 'Escape') {
-      if (this.pending.length || this.mindistA) this.cancelPending();
-      else this.setMode(null);
-      return true;
-    }
+    if (e.key === 'Escape' && (this.pending.length || this.mindistA)) { this.cancelPending(); return true; }
     return false;
   }
 

@@ -2,20 +2,13 @@ import { zoomTypeToClasses, isGated, namesGatedType } from './ifc-classes.js';
 import { getValue, valueText, roundNumber } from './props.js';
 import { packRgb } from './models.js';
 import { t } from '../i18n.js';
+import { uuid } from './util.js';
+import { E, render, parseXml, elems, child, text, descendants } from './xml.js';
 
 // Smart views: ordered rule lists that build up the visible set, colours and
 // transparency. Format and semantics follow the BIMcollab Zoom .bcsv spec v5.
 
-export const ACTIONS = ['Add', 'Remove', 'RemoveOthers', 'SetColored', 'SetTransparent', 'SetOpaque', 'SetAutoColored', 'AddSetColored', 'AddSetTransparent', 'And'];
-export const COLOR_ACTIONS = new Set(['SetColored', 'AddSetColored']);
-export const CONDITIONS = {
-  StringValue: ['Is', 'IsNot', 'Contains', 'DoesNotContain', 'StartsWith', 'EndsWith', 'Or', 'Nor', 'StringIsDefined', 'StringIsNotDefined'],
-  DoubleValue: ['Equals', 'NotEquals', 'Less', 'Greater', 'LessEqual', 'GreaterEqual', 'NumericIsDefined', 'NumericIsNotDefined'],
-  BoolValue: ['BooleanTrue', 'BooleanFalse', 'BooleanIsDefined', 'BooleanIsNotDefined'],
-  LogicalValue: ['LogicalTrue', 'LogicalFalse', 'LogicalUnknown', 'LogicalIsDefined', 'LogicalIsNotDefined'],
-};
 export const PROPERTY_TYPES = ['Summary', 'Location', 'Material', 'File', 'Project', 'PropertySet'];
-export const NO_VALUE_CONDITIONS = new Set(['StringIsDefined', 'StringIsNotDefined', 'NumericIsDefined', 'NumericIsNotDefined', 'BooleanTrue', 'BooleanFalse', 'BooleanIsDefined', 'BooleanIsNotDefined', 'LogicalTrue', 'LogicalFalse', 'LogicalUnknown', 'LogicalIsDefined', 'LogicalIsNotDefined']);
 
 export const PALETTE = [
   [230, 25, 75], [60, 180, 75], [255, 225, 25], [0, 130, 200], [245, 130, 48], [145, 30, 180], [70, 240, 240], [240, 50, 230],
@@ -38,84 +31,132 @@ function hslToRgb(h, s, l) {
   return [f(0), f(8), f(4)];
 }
 
-export function uuid() {
-  return crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
-  });
-}
-
 const now = () => new Date().toISOString().slice(0, 19);
 
-// --- condition evaluation ------------------------------------------------------
+// --- conditions -------------------------------------------------------------------
 const toNum = (v) => (typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v.replace(',', '.')) : NaN);
 const lower = (v) => valueText(v).toLowerCase();
-
-function testOne(cond, v) {
-  const want = (cond.value ?? '').toString();
-  const wl = want.toLowerCase();
-  const defined = v !== undefined && v !== null && v !== '';
-  switch (cond.type) {
-    case 'Is': return defined && lower(v) === wl;
-    case 'IsNot': return !defined || lower(v) !== wl;
-    case 'Contains': return defined && lower(v).includes(wl);
-    case 'DoesNotContain': return !defined || !lower(v).includes(wl);
-    case 'StartsWith': return defined && lower(v).startsWith(wl);
-    case 'EndsWith': return defined && lower(v).endsWith(wl);
-    case 'Or': return defined && splitList(wl).includes(lower(v));
-    case 'Nor': return !defined || !splitList(wl).includes(lower(v));
-    case 'StringIsDefined': return defined;
-    case 'StringIsNotDefined': return !defined;
-    case 'NumericIsDefined': return defined && Number.isFinite(toNum(v));
-    case 'NumericIsNotDefined': return !defined || !Number.isFinite(toNum(v));
-    case 'BooleanIsDefined': case 'LogicalIsDefined': return defined;
-    case 'BooleanIsNotDefined': case 'LogicalIsNotDefined': return !defined;
-    case 'BooleanTrue': case 'LogicalTrue': return v === true || lower(v) === 'true' || lower(v) === 't';
-    case 'BooleanFalse': case 'LogicalFalse': return v === false || lower(v) === 'false' || lower(v) === 'f';
-    case 'LogicalUnknown': return lower(v) === 'unknown' || lower(v) === 'u';
-    default: break;
-  }
-  // compare at the precision values are shown with (valueText)
+const defined = (v) => v !== undefined && v !== null && v !== '';
+const splitList = (s) => s.split(/[;|]/).map((x) => x.trim()).filter(Boolean);
+const isTrue = (v) => v === true || lower(v) === 'true' || lower(v) === 't';
+const isFalse = (v) => v === false || lower(v) === 'false' || lower(v) === 'f';
+// case-insensitive test of a defined value's text
+const byText = (f) => (v, want) => defined(v) && f(lower(v), want.toLowerCase());
+// compare at the precision values are shown with (valueText); false unless both sides are numbers
+const byNumber = (f) => (v, want) => {
   const a = roundNumber(toNum(v)), b = roundNumber(toNum(want));
-  if (!Number.isFinite(a) || !Number.isFinite(b)) return cond.type === 'NotEquals';
-  const eps = 1e-12 * Math.max(1, Math.abs(a), Math.abs(b));
-  switch (cond.type) {
-    case 'Equals': return Math.abs(a - b) <= eps;
-    case 'NotEquals': return Math.abs(a - b) > eps;
-    case 'Less': return a < b - eps;
-    case 'Greater': return a > b + eps;
-    case 'LessEqual': return a <= b + eps;
-    case 'GreaterEqual': return a >= b - eps;
-    default: return false;
-  }
-}
+  return Number.isFinite(a) && Number.isFinite(b) && f(a, b, 1e-12 * Math.max(1, Math.abs(a), Math.abs(b)));
+};
 
-function splitList(s) {
-  return s.split(/[;|]/).map((x) => x.trim()).filter(Boolean);
-}
+/**
+ * Every condition, in UI order: the value type it belongs to, whether it takes no value, and
+ * either `test(v, want)` for one property value or `not`, the condition it negates. A list value
+ * meets a condition when any entry does, and a negation when no entry meets the negated condition.
+ */
+const CONDITION_DEFS = {
+  Is: { valueType: 'StringValue', test: byText((s, w) => s === w) },
+  IsNot: { valueType: 'StringValue', not: 'Is' },
+  Contains: { valueType: 'StringValue', test: byText((s, w) => s.includes(w)) },
+  DoesNotContain: { valueType: 'StringValue', not: 'Contains' },
+  StartsWith: { valueType: 'StringValue', test: byText((s, w) => s.startsWith(w)) },
+  EndsWith: { valueType: 'StringValue', test: byText((s, w) => s.endsWith(w)) },
+  Or: { valueType: 'StringValue', test: byText((s, w) => splitList(w).includes(s)) },
+  Nor: { valueType: 'StringValue', not: 'Or' },
+  StringIsDefined: { valueType: 'StringValue', noValue: true, test: defined },
+  StringIsNotDefined: { valueType: 'StringValue', noValue: true, not: 'StringIsDefined' },
+  Equals: { valueType: 'DoubleValue', test: byNumber((a, b, eps) => Math.abs(a - b) <= eps) },
+  NotEquals: { valueType: 'DoubleValue', not: 'Equals' },
+  Less: { valueType: 'DoubleValue', test: byNumber((a, b, eps) => a < b - eps) },
+  Greater: { valueType: 'DoubleValue', test: byNumber((a, b, eps) => a > b + eps) },
+  LessEqual: { valueType: 'DoubleValue', test: byNumber((a, b, eps) => a <= b + eps) },
+  GreaterEqual: { valueType: 'DoubleValue', test: byNumber((a, b, eps) => a >= b - eps) },
+  NumericIsDefined: { valueType: 'DoubleValue', noValue: true, test: (v) => defined(v) && Number.isFinite(toNum(v)) },
+  NumericIsNotDefined: { valueType: 'DoubleValue', noValue: true, not: 'NumericIsDefined' },
+  BooleanTrue: { valueType: 'BoolValue', noValue: true, test: isTrue },
+  BooleanFalse: { valueType: 'BoolValue', noValue: true, test: isFalse },
+  BooleanIsDefined: { valueType: 'BoolValue', noValue: true, test: defined },
+  BooleanIsNotDefined: { valueType: 'BoolValue', noValue: true, not: 'BooleanIsDefined' },
+  LogicalTrue: { valueType: 'LogicalValue', noValue: true, test: isTrue },
+  LogicalFalse: { valueType: 'LogicalValue', noValue: true, test: isFalse },
+  LogicalUnknown: { valueType: 'LogicalValue', noValue: true, test: (v) => lower(v) === 'unknown' || lower(v) === 'u' },
+  LogicalIsDefined: { valueType: 'LogicalValue', noValue: true, test: defined },
+  LogicalIsNotDefined: { valueType: 'LogicalValue', noValue: true, not: 'LogicalIsDefined' },
+};
 
-const NEGATIVE = new Set(['IsNot', 'DoesNotContain', 'Nor', 'StringIsNotDefined', 'NumericIsNotDefined', 'NotEquals', 'BooleanIsNotDefined', 'LogicalIsNotDefined']);
+/** Condition types per property value type, in UI order. */
+export const CONDITIONS = {};
+for (const [type, d] of Object.entries(CONDITION_DEFS)) (CONDITIONS[d.valueType] ||= []).push(type);
+export const NO_VALUE_CONDITIONS = new Set(Object.keys(CONDITION_DEFS).filter((c) => CONDITION_DEFS[c].noValue));
 
+const anyValue = (test, v, want) => (!Array.isArray(v) ? test(v, want) : v.length ? v.some((x) => test(x, want)) : test(undefined, want));
+
+/** Whether a property value meets a condition ({type, value}); unknown condition types never match. */
 export function testCondition(cond, v) {
-  if (Array.isArray(v)) {
-    if (!v.length) return testOne(cond, undefined);
-    return NEGATIVE.has(cond.type) ? v.every((x) => testOne(cond, x)) : v.some((x) => testOne(cond, x));
-  }
-  return testOne(cond, v);
+  const def = Object.hasOwn(CONDITION_DEFS, cond.type) ? CONDITION_DEFS[cond.type] : null;
+  if (!def) return false;
+  const want = (cond.value ?? '').toString();
+  return def.not ? !anyValue(CONDITION_DEFS[def.not].test, v, want) : anyValue(def.test, v, want);
 }
 
 function makePredicate(rule) {
   const classes = zoomTypeToClasses(rule.ifcType);
-  const prop = rule.property || {};
+  const prop = rule.property;
   const noProp = !prop.name && prop.type !== 'Material';
   const pred = (model, i, el) => {
     if (classes && !classes.some((c) => el.supers.includes(c))) return false;
     if (noProp) return true;
-    return testCondition(rule.condition || {}, getValue(model, i, prop));
+    return testCondition(rule.condition, getValue(model, i, prop));
   };
   // spaces and openings only match a rule that names their type (unless their Alt toggle is on)
   pred.explicit = (el) => namesGatedType(el, classes);
   return pred;
+}
+
+// --- actions ----------------------------------------------------------------------
+/**
+ * Every action, in UI order: `set(w, i, hit, packed)` applies it to element i of a model's view w
+ * (hit: the rule matched it), `legend(rule, shown, view)` colours and lists the elements with
+ * geometry it left visible ([w, i] pairs). And combines a rule with the next one.
+ */
+const ACTION_DEFS = {
+  Add: { set: (w, i, h) => { if (h) w.vis[i] = 1; } },
+  Remove: { set: (w, i, h) => { if (h) w.vis[i] = 0; } },
+  RemoveOthers: { set: (w, i, h) => { if (!h) w.vis[i] = 0; } },
+  SetColored: { set: (w, i, h, c) => { if (h && w.vis[i]) w.color[i] = c; }, legend: colorLegend },
+  SetTransparent: { set: (w, i, h) => { if (h && w.vis[i]) w.ghost[i] = 1; } },
+  SetOpaque: { set: (w, i, h) => { if (h && w.vis[i]) w.ghost[i] = 0; } },
+  SetAutoColored: { legend: autoColor },
+  AddSetColored: { set: (w, i, h, c) => { if (h) { w.vis[i] = 1; w.color[i] = c; } }, legend: colorLegend },
+  AddSetTransparent: { set: (w, i, h) => { if (h) { w.vis[i] = 1; w.ghost[i] = 1; } } },
+  And: {},
+};
+export const ACTIONS = Object.keys(ACTION_DEFS);
+/** Actions that paint the rule's own colour. */
+export const COLOR_ACTIONS = new Set(ACTIONS.filter((a) => ACTION_DEFS[a].legend === colorLegend));
+
+const ruleColor = (a) => [a.r ?? 255, a.g ?? 0, a.b ?? 0];
+const gidsOf = (items) => items.map(([w, i]) => w.model.base + i);
+
+function colorLegend(rule, shown) {
+  return [{ color: ruleColor(rule.action), label: ruleLabel(rule), count: shown.length, gids: gidsOf(shown) }];
+}
+
+/** One palette colour and legend entry per distinct value of the rule's property. */
+function autoColor(rule, shown, view) {
+  const groups = new Map();
+  for (const [w, i] of shown) {
+    const key = valueText(getValue(w.model, i, rule.property)) || '(nicht definiert)';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push([w, i]);
+  }
+  const keys = [...groups.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  return keys.map((key, k) => {
+    const color = paletteColor(k);
+    const items = groups.get(key);
+    const p = packRgb(color);
+    for (const [w, i] of items) w.color[i] = p;
+    return { color, label: key, count: items.length, gids: gidsOf(items), takeoff: takeoff(view, items) };
+  });
 }
 
 /**
@@ -130,14 +171,13 @@ export function evaluate(view, models, skipChild = isGated) {
   let chain = [];
   for (const rule of view.rules) {
     const pred = makePredicate(rule);
-    const type = rule.action?.type || 'Add';
+    const { type } = rule.action;
     if (type === 'And') { chain.push(pred); continue; }
     const preds = [...chain, pred];
     chain = [];
-    const rgb = [rule.action.r ?? 255, rule.action.g ?? 0, rule.action.b ?? 0];
-    const packed = packRgb(rgb);
-    const auto = type === 'SetAutoColored' ? new Map() : null;
-    const colored = [];
+    const { set = () => {}, legend: toLegend } = Object.hasOwn(ACTION_DEFS, type) ? ACTION_DEFS[type] : {};
+    const packed = packRgb(ruleColor(rule.action));
+    const shown = toLegend ? [] : null;
     for (const w of W) {
       const m = w.model;
       const hit = new Uint8Array(m.count);
@@ -149,43 +189,11 @@ export function evaluate(view, models, skipChild = isGated) {
         if (preds.every((p) => p(m, i, el))) for (const d of m.descendants(i, [], skipChild)) hit[d] = 1;
       }
       for (let i = 0; i < m.count; i++) {
-        const h = hit[i];
-        switch (type) {
-          case 'Add': if (h) w.vis[i] = 1; break;
-          case 'Remove': if (h) w.vis[i] = 0; break;
-          case 'RemoveOthers': if (!h) w.vis[i] = 0; break;
-          case 'SetColored': if (h && w.vis[i]) w.color[i] = packed; break;
-          case 'SetTransparent': if (h && w.vis[i]) w.ghost[i] = 1; break;
-          case 'SetOpaque': if (h && w.vis[i]) w.ghost[i] = 0; break;
-          case 'AddSetColored': if (h) { w.vis[i] = 1; w.color[i] = packed; } break;
-          case 'AddSetTransparent': if (h) { w.vis[i] = 1; w.ghost[i] = 1; } break;
-          case 'SetAutoColored':
-            if (h && w.vis[i] && m.hasGeom[i]) {
-              const key = valueText(getValue(m, i, rule.property || {})) || '(nicht definiert)';
-              let entry = auto.get(key);
-              if (!entry) auto.set(key, (entry = { label: key, items: [] }));
-              entry.items.push([w, i]);
-            }
-            break;
-          default: break;
-        }
-        // only elements that actually got the colour (Set* skips hidden ones)
-        if (h && w.vis[i] && m.hasGeom[i] && COLOR_ACTIONS.has(type)) colored.push(m.base + i);
+        set(w, i, hit[i], packed);
+        if (shown && hit[i] && w.vis[i] && m.hasGeom[i]) shown.push([w, i]);
       }
     }
-    if (COLOR_ACTIONS.has(type)) {
-      legend.push({ color: rgb, label: ruleLabel(rule), count: colored.length, gids: colored });
-    }
-    if (auto) {
-      const keys = [...auto.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-      keys.forEach((key, k) => {
-        const c = paletteColor(k);
-        const entry = auto.get(key);
-        const p = packRgb(c);
-        for (const [w, i] of entry.items) w.color[i] = p;
-        legend.push({ color: c, label: key, count: entry.items.length, gids: entry.items.map(([x, i]) => x.model.base + i), takeoff: takeoff(view, entry.items) });
-      });
-    }
+    if (toLegend) legend.push(...toLegend(rule, shown, view));
   }
   return { perModel: W, legend: legend.length ? { title: view.title, entries: legend } : null };
 }
@@ -208,24 +216,39 @@ function takeoff(view, items) {
 }
 
 export function ruleLabel(rule) {
-  const p = rule.property || {};
-  const c = rule.condition || {};
-  const parts = [rule.ifcType && rule.ifcType !== 'Any' ? rule.ifcType : ''];
+  const { property: p, condition: c } = rule;
+  const parts = [rule.ifcType !== 'Any' ? rule.ifcType : ''];
   const all = p.type === 'Summary' && p.name === 'Model' && c.type === 'StringIsDefined';
   if (p.name && !all) parts.push(p.name);
-  if (c.type && !all) parts.push(t(`cond.${c.type}`));
+  if (!all) parts.push(t(`cond.${c.type}`));
   if (c.value && !NO_VALUE_CONDITIONS.has(c.type)) parts.push(c.value);
   return parts.filter(Boolean).join(' ') || 'Regel';
 }
 
-// --- rule construction helpers ---------------------------------------------------
-export function rule(ifcType, [ptype, psetName, name, valueType = 'StringValue'], [ctype, value = ''], [atype, r, g, b] = ['Add']) {
+// --- rules ------------------------------------------------------------------------
+/** A rule with every field present (bcsv defaults filled in); applied wherever rules enter. */
+export function normalizeRule(src) {
+  const p = src.property || {}, c = src.condition || {}, a = src.action || {};
+  const type = p.type || 'PropertySet';
   return {
-    ifcType,
-    property: { type: ptype, psetName: psetName ?? (ptype === 'PropertySet' ? '' : ptype), name, valueType, unit: 'None' },
-    condition: { type: ctype, value },
-    action: { type: atype, r, g, b },
+    ifcType: src.ifcType || 'Any',
+    property: { type, psetName: p.psetName ?? (type === 'PropertySet' ? '' : type), name: p.name ?? '', valueType: p.valueType || 'StringValue', unit: p.unit || 'None' },
+    condition: { type: c.type || 'StringIsDefined', value: c.value ?? '', ...(c.state && { state: c.state }) },
+    action: { type: a.type || 'Add', r: a.r, g: a.g, b: a.b },
   };
+}
+
+/** Normalize the rules of all views of the given sets in place. */
+function normalizeSets(sets) {
+  for (const s of sets) {
+    s.views ||= [];
+    for (const v of s.views) v.rules = (v.rules || []).map(normalizeRule);
+  }
+  return sets;
+}
+
+export function rule(ifcType, [type, psetName, name, valueType], [ctype, value], [atype, r, g, b] = ['Add']) {
+  return normalizeRule({ ifcType, property: { type, psetName, name, valueType }, condition: { type: ctype, value }, action: { type: atype, r, g, b } });
 }
 
 const ALL = ['Summary', 'Summary', 'Model'];
@@ -317,109 +340,64 @@ export function builtinSets() {
 }
 
 // --- .bcsv import / export ------------------------------------------------------
-const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+// text element, empty when the value is missing
+const T = (name, v) => E(name, null, String(v ?? ''));
 
+/** A .bcsv file (v5): the header and the SMARTVIEWSETS root element, CRLF line ends. */
 export function exportBcsv(sets) {
-  const L = [];
-  L.push('<?xml version="1.0"?>');
-  L.push('<bimcollabsmartviewfile>');
-  L.push('  <version>5</version>');
-  L.push('  <applicationversion>OpenZoom 1.0</applicationversion>');
-  L.push('</bimcollabsmartviewfile>');
-  L.push('<SMARTVIEWSETS>');
-  for (const s of sets) {
-    L.push('  <SMARTVIEWSET>');
-    L.push(`    <TITLE>${esc(s.title)}</TITLE>`);
-    L.push(`    <DESCRIPTION>${esc(s.description)}</DESCRIPTION>`);
-    L.push(`    <GUID>${esc(s.guid)}</GUID>`);
-    L.push(`    <MODIFICATIONDATE>${esc(s.modified || now())}</MODIFICATIONDATE>`);
-    L.push('    <SMARTVIEWS>');
-    for (const v of s.views) {
-      L.push('      <SMARTVIEW>');
-      L.push(`        <TITLE>${esc(v.title)}</TITLE>`);
-      L.push(`        <DESCRIPTION>${esc(v.description)}</DESCRIPTION>`);
-      L.push(`        <CREATOR>${esc(v.creator)}</CREATOR>`);
-      L.push(`        <CREATIONDATE>${esc(v.created || now())}</CREATIONDATE>`);
-      L.push(`        <MODIFIER>${esc(v.modifier)}</MODIFIER>`);
-      L.push(`        <MODIFICATIONDATE>${esc(v.modified || now())}</MODIFICATIONDATE>`);
-      L.push(`        <GUID>${esc(v.guid)}</GUID>`);
-      L.push('        <RULES>');
-      for (const r of v.rules) {
-        const p = r.property || {};
-        const c = r.condition || {};
-        const a = r.action || {};
-        L.push('          <RULE>');
-        L.push(`            <IFCTYPE>${esc(r.ifcType || 'Any')}</IFCTYPE>`);
-        L.push('            <PROPERTY>');
-        L.push(`              <NAME>${esc(p.name)}</NAME>`);
-        L.push(`              <PROPERTYSETNAME>${esc(p.psetName ?? '')}</PROPERTYSETNAME>`);
-        L.push(`              <TYPE>${esc(p.type || 'PropertySet')}</TYPE>`);
-        L.push(`              <VALUETYPE>${esc(p.valueType || 'StringValue')}</VALUETYPE>`);
-        L.push(`              <UNIT>${esc(p.unit || 'None')}</UNIT>`);
-        L.push('            </PROPERTY>');
-        L.push('            <CONDITION>');
-        L.push(`              <TYPE>${esc(c.type || 'StringIsDefined')}</TYPE>`);
-        L.push(c.value ? `              <VALUE>${esc(c.value)}</VALUE>` : '              <VALUE/>');
-        if (c.state) L.push(`              <STATE>${esc(c.state)}</STATE>`);
-        L.push('            </CONDITION>');
-        L.push('            <ACTION>');
-        L.push(`              <TYPE>${esc(a.type || 'Add')}</TYPE>`);
-        if (['SetColored', 'AddSetColored', 'SetAutoColored'].includes(a.type) && a.r !== undefined) {
-          L.push(`              <R>${a.r | 0}</R>`, `              <G>${a.g | 0}</G>`, `              <B>${a.b | 0}</B>`);
-        }
-        L.push('            </ACTION>');
-        L.push('          </RULE>');
-      }
-      L.push('        </RULES>');
-      const t = v.takeoff || {};
-      L.push('        <INFORMATIONTAKEOFF>');
-      L.push(`          <PROPERTYSETNAME>${esc(t.psetName || 'None')}</PROPERTYSETNAME>`);
-      L.push(`          <PROPERTYNAME>${esc(t.propName || 'None')}</PROPERTYNAME>`);
-      L.push(`          <OPERATION>${Number(t.op) || 0}</OPERATION>`);
-      L.push('        </INFORMATIONTAKEOFF>');
-      L.push('      </SMARTVIEW>');
-    }
-    L.push('    </SMARTVIEWS>');
-    L.push('  </SMARTVIEWSET>');
-  }
-  L.push('</SMARTVIEWSETS>');
-  return L.join('\r\n');
+  const ruleEl = ({ ifcType, property: p, condition: c, action: a }) => E('RULE', null,
+    T('IFCTYPE', ifcType),
+    E('PROPERTY', null, T('NAME', p.name), T('PROPERTYSETNAME', p.psetName), T('TYPE', p.type), T('VALUETYPE', p.valueType), T('UNIT', p.unit)),
+    E('CONDITION', null, T('TYPE', c.type), c.value ? T('VALUE', c.value) : E('VALUE'), c.state ? T('STATE', c.state) : null),
+    E('ACTION', null, T('TYPE', a.type),
+      ['SetColored', 'AddSetColored', 'SetAutoColored'].includes(a.type) && a.r !== undefined ? [T('R', a.r | 0), T('G', a.g | 0), T('B', a.b | 0)] : null));
+  const viewEl = (v) => {
+    const tk = v.takeoff || {};
+    return E('SMARTVIEW', null,
+      T('TITLE', v.title), T('DESCRIPTION', v.description), T('CREATOR', v.creator), T('CREATIONDATE', v.created || now()),
+      T('MODIFIER', v.modifier), T('MODIFICATIONDATE', v.modified || now()), T('GUID', v.guid),
+      E('RULES', null, v.rules.map(ruleEl)),
+      E('INFORMATIONTAKEOFF', null, T('PROPERTYSETNAME', tk.psetName || 'None'), T('PROPERTYNAME', tk.propName || 'None'), T('OPERATION', Number(tk.op) || 0)));
+  };
+  const setEl = (s) => E('SMARTVIEWSET', null,
+    T('TITLE', s.title), T('DESCRIPTION', s.description), T('GUID', s.guid), T('MODIFICATIONDATE', s.modified || now()),
+    E('SMARTVIEWS', null, s.views.map(viewEl)));
+  const NL = '\r\n';
+  return [
+    '<?xml version="1.0"?>',
+    render(E('bimcollabsmartviewfile', null, T('version', 5), T('applicationversion', 'OpenZoom 1.0')), '', NL),
+    render(E('SMARTVIEWSETS', null, sets.map(setEl)), '', NL),
+  ].join(NL);
 }
 
 /** Parse a .bcsv file (the format has two root elements, so it is wrapped first). */
-export function importBcsv(text) {
-  const body = text.replace(/^﻿/, '').replace(/<\?xml[^>]*\?>/i, '');
-  const doc = new DOMParser().parseFromString(`<root>${body}</root>`, 'application/xml');
-  if (doc.getElementsByTagName('parsererror').length) throw new Error('Ungültige .bcsv-Datei');
-  const kid = (el, name) => [...el.children].find((c) => c.tagName.toUpperCase() === name);
-  const txt = (el, name) => (kid(el, name)?.textContent ?? '').trim();
-  const sets = [];
-  for (const s of doc.getElementsByTagName('SMARTVIEWSET')) {
-    const set = { guid: txt(s, 'GUID') || uuid(), title: txt(s, 'TITLE'), description: txt(s, 'DESCRIPTION'), modified: txt(s, 'MODIFICATIONDATE'), views: [] };
-    const views = kid(s, 'SMARTVIEWS');
-    for (const v of views ? [...views.children] : []) {
-      const rules = [];
-      const rr = kid(v, 'RULES');
-      for (const r of rr ? [...rr.children] : []) {
-        const p = kid(r, 'PROPERTY'), c = kid(r, 'CONDITION'), a = kid(r, 'ACTION');
-        const num = (x) => (x === '' ? undefined : Number(x));
-        rules.push({
-          ifcType: txt(r, 'IFCTYPE') || 'Any',
-          property: p ? { name: txt(p, 'NAME'), psetName: txt(p, 'PROPERTYSETNAME'), type: txt(p, 'TYPE') || 'PropertySet', valueType: txt(p, 'VALUETYPE') || 'StringValue', unit: txt(p, 'UNIT') || 'None' } : {},
-          condition: c ? { type: txt(c, 'TYPE'), value: txt(c, 'VALUE'), state: txt(c, 'STATE') || undefined } : {},
-          action: a ? { type: txt(a, 'TYPE') || 'Add', r: num(txt(a, 'R')), g: num(txt(a, 'G')), b: num(txt(a, 'B')) } : { type: 'Add' },
-        });
-      }
-      const t = kid(v, 'INFORMATIONTAKEOFF');
-      set.views.push({
-        guid: txt(v, 'GUID') || uuid(), title: txt(v, 'TITLE'), description: txt(v, 'DESCRIPTION'),
-        creator: txt(v, 'CREATOR'), created: txt(v, 'CREATIONDATE'), modifier: txt(v, 'MODIFIER'), modified: txt(v, 'MODIFICATIONDATE'),
-        rules, takeoff: t ? { psetName: txt(t, 'PROPERTYSETNAME'), propName: txt(t, 'PROPERTYNAME'), op: Number(txt(t, 'OPERATION')) || 0 } : null,
-      });
-    }
-    sets.push(set);
-  }
-  return sets;
+export function importBcsv(bcsv) {
+  const body = bcsv.replace(/^﻿/, '').replace(/<\?xml[^>]*\?>/i, '');
+  const root = parseXml(`<root>${body}</root>`);
+  if (!root) throw new Error('Ungültige .bcsv-Datei');
+  const num = (x) => (x === '' ? undefined : Number(x));
+  const ruleOf = (r) => {
+    const p = child(r, 'PROPERTY'), c = child(r, 'CONDITION'), a = child(r, 'ACTION');
+    return normalizeRule({
+      ifcType: text(r, 'IFCTYPE'),
+      property: p && { name: text(p, 'NAME'), psetName: text(p, 'PROPERTYSETNAME'), type: text(p, 'TYPE'), valueType: text(p, 'VALUETYPE'), unit: text(p, 'UNIT') },
+      condition: c && { type: text(c, 'TYPE'), value: text(c, 'VALUE'), state: text(c, 'STATE') },
+      action: a && { type: text(a, 'TYPE'), r: num(text(a, 'R')), g: num(text(a, 'G')), b: num(text(a, 'B')) },
+    });
+  };
+  const viewOf = (v) => {
+    const tk = child(v, 'INFORMATIONTAKEOFF');
+    return {
+      guid: text(v, 'GUID') || uuid(), title: text(v, 'TITLE'), description: text(v, 'DESCRIPTION'),
+      creator: text(v, 'CREATOR'), created: text(v, 'CREATIONDATE'), modifier: text(v, 'MODIFIER'), modified: text(v, 'MODIFICATIONDATE'),
+      rules: elems(child(v, 'RULES')).map(ruleOf),
+      takeoff: tk ? { psetName: text(tk, 'PROPERTYSETNAME'), propName: text(tk, 'PROPERTYNAME'), op: Number(text(tk, 'OPERATION')) || 0 } : null,
+    };
+  };
+  return descendants(root, 'SMARTVIEWSET').map((s) => ({
+    guid: text(s, 'GUID') || uuid(), title: text(s, 'TITLE'), description: text(s, 'DESCRIPTION'), modified: text(s, 'MODIFICATIONDATE'),
+    views: elems(child(s, 'SMARTVIEWS')).map(viewOf),
+  }));
 }
 
 /** Smart view library: built-in sets + user sets persisted in localStorage. */
@@ -428,7 +406,7 @@ export class SmartViewLibrary extends EventTarget {
     super();
     this.builtin = builtinSets();
     this.local = [];
-    try { this.local = JSON.parse(localStorage.getItem('oz.smartviews') || '[]'); } catch { this.local = []; }
+    try { this.local = normalizeSets(JSON.parse(localStorage.getItem('oz.smartviews') || '[]')); } catch { this.local = []; }
     this.activeGuid = null;
   }
 
@@ -452,7 +430,7 @@ export class SmartViewLibrary extends EventTarget {
   }
 
   importSets(sets) {
-    for (const s of sets) {
+    for (const s of normalizeSets(sets)) {
       const existing = this.local.find((x) => x.guid === s.guid);
       if (existing) Object.assign(existing, s);
       else this.local.push(s);

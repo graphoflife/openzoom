@@ -1,4 +1,5 @@
 import { icon } from './icons.js';
+import { t } from '../i18n.js';
 
 /** Tiny hyperscript helper: h('div.cls#id', {attrs, on: {click}}, ...children). */
 export function h(spec, attrs, ...children) {
@@ -122,7 +123,7 @@ export function dialog({ title, body, buttons = [], width, onClose, className })
     if (e.key === 'Escape') { e.stopPropagation(); close(); }
   };
   document.addEventListener('keydown', onKey, true);
-  const head = h('div.modal-head', h('span', title), h('button.icon-btn', { title: 'Schließen', on: { click: close }, html: icon('close', 16) }));
+  const head = h('div.modal-head', h('span', title), h('button.icon-btn', { title: t('ui.close'), on: { click: close }, html: icon('close', 16) }));
   const content = h('div.modal-body', body);
   const foot = h('div.modal-foot');
   for (const b of buttons) {
@@ -199,4 +200,20 @@ export function hexToRgb(hex) {
 
 export function rgbToHex(c) {
   return `#${c.map((x) => (x | 0).toString(16).padStart(2, '0')).join('')}`;
+}
+
+/** Date-time stamp for file names (20261110_1830). */
+export function stamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`;
+}
+
+export function dataUrlToBlob(url) {
+  const [head, data] = url.split(',');
+  const mime = head.match(/:(.*?);/)[1];
+  const bin = atob(data);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new Blob([arr], { type: mime });
 }

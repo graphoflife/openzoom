@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { exportBCF, importBCF, newGuid, colorToBcf, bcfToColor } from './bcf.js';
+import { exportBCF, importBCF, colorToBcf, bcfToColor } from './bcf.js';
+import { uuid } from './util.js';
 import { isGated } from './ifc-classes.js';
 import { packRgb, unpackRgb } from './models.js';
 import { blankView } from './state.js';
@@ -50,16 +51,31 @@ export class IssueManager extends EventTarget {
 
   author() { return this.app.settings.get('author') || 'OpenZoom'; }
 
-  /** Capture camera, visibility, colours, selection and clipping as a BCF viewpoint. */
-  captureViewpoint() {
+  /** Project file part: the issue list. */
+  serialize() { return this.issues; }
+
+  load(list = []) {
+    this.issues = list;
+    this.changed();
+  }
+
+  /** The current camera as a BCF camera (IFC coordinates). */
+  captureCamera() {
     const app = this.app;
     const M = app.models;
     const cam = app.viewer.camera;
     const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion);
     const up = new THREE.Vector3(0, 1, 0).applyQuaternion(cam.quaternion);
-    const camera = cam.isOrthographicCamera
+    return cam.isOrthographicCamera
       ? { type: 'orthographic', position: M.toIfc(cam.position), direction: M.dirToIfc(dir), up: M.dirToIfc(up), viewToWorldScale: (cam.top - cam.bottom) / cam.zoom, aspectRatio: app.viewer.aspect }
       : { type: 'perspective', position: M.toIfc(cam.position), direction: M.dirToIfc(dir), up: M.dirToIfc(up), fov: cam.fov, aspectRatio: app.viewer.aspect };
+  }
+
+  /** Capture camera, visibility, colours, selection and clipping as a BCF viewpoint. */
+  captureViewpoint() {
+    const app = this.app;
+    const M = app.models;
+    const camera = this.captureCamera();
     const visible = [], hidden = [];
     const colors = new Map();
     const hints = { spacesVisible: false, spaceBoundariesVisible: false, openingsVisible: false };
@@ -83,7 +99,7 @@ export class IssueManager extends EventTarget {
     const selection = [];
     for (const gid of app.state.selection) { const el = M.element(gid); if (el?.guid) selection.push(el.guid); }
     return {
-      guid: newGuid(),
+      guid: uuid(),
       snapshot: this.snapshot(),
       camera,
       components: {
@@ -114,7 +130,7 @@ export class IssueManager extends EventTarget {
   create(fields = {}) {
     const now = new Date().toISOString();
     const issue = {
-      guid: newGuid(), title: fields.title || `Issue ${this.issues.length + 1}`, description: fields.description || '',
+      guid: uuid(), title: fields.title || `Issue ${this.issues.length + 1}`, description: fields.description || '',
       status: 'Open', type: fields.type || 'Issue', priority: fields.priority || 'Normal', assignedTo: '', stage: '', labels: fields.labels || [],
       dueDate: '', creationDate: now, creationAuthor: this.author(), modifiedDate: '', modifiedAuthor: '', index: this.issues.length + 1,
       referencedModels: this.app.models.models.map((m) => m.name), comments: [], viewpoints: [this.captureViewpoint()],
@@ -157,7 +173,6 @@ export class IssueManager extends EventTarget {
       for (const { model: m, vis, color } of view) {
         // BCF has no model switch: element visibility carries it, so show the model itself
         m.visible = true;
-        m.group.visible = true;
         for (let i = 0; i < m.count; i++) {
           const el = m.elements[i];
           // spaces/openings follow the view setup hints unless listed explicitly

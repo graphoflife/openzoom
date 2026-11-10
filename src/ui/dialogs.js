@@ -1,7 +1,7 @@
 import { h, clear, dialog } from './dom.js';
 import { t, getLanguage } from '../i18n.js';
 import { classLabel } from '../core/ifc-classes.js';
-import { psetsOf, valueText, storeyZ } from '../core/props.js';
+import { psetsOf, valueText, storeyZ, elementMatches } from '../core/props.js';
 
 /** Ctrl+F: search names, GUIDs, types and (optionally) property values. */
 export function openSearch(app, initial = '') {
@@ -18,8 +18,7 @@ export function openSearch(app, initial = '') {
     if (q.length < 1) { info.textContent = ''; return; }
     for (const m of app.models.models) {
       for (let i = 0; i < m.count; i++) {
-        const el = m.elements[i];
-        let match = el.guid.toLowerCase() === q || [el.name, el.longName, el.cls, el.typeName, el.objType, el.tag, el.desc].some((s) => s && s.toLowerCase().includes(q));
+        let match = elementMatches(m.elements[i], q);
         if (!match && inProps.checked) {
           outer: for (const ps of psetsOf(m, i)) for (const p of ps.p) if (valueText(p[1]).toLowerCase().includes(q)) { match = true; break outer; }
         }
@@ -90,20 +89,19 @@ export function openSettings(app) {
 
 export function openShortcuts(app) {
   const extra = [
-    ['Orbit', t('cmd.orbit'), 'Links ziehen: drehen · Shift+links / Mitte ziehen: verschieben · Rad: zoomen · Alt+Rad: schnell zoomen · Pfeiltasten: verschieben'],
-    ['Fly', t('cmd.fly'), 'W/S/A/D · Q/E drehen · Bild↑/↓ · Alt+↑/↓ schauen · , . Tempo · Strg+L waagerecht'],
-    ['Sections', t('menu.sectioning'), 'Strg+Rad: Schnittbox vergrößern/verkleinern bzw. Ebene verschieben · Ziehen: Ebene/Box-Griff verschieben'],
-    ['Dims', t('cmd.dimension'), 'Klick: lichter Abstand · Shift+Klick: Punkt-zu-Punkt · Strg+Klick: zur Schnittebene'],
-    ['Props', t('props.title'), 'Tab / Shift+Tab: nächstes / voriges Property Set · Strg+C: Wert kopieren · Strg+V: Suche mit Zwischenablage'],
-    ['Mouse', 'Maus', 'Doppelklick Mitte: alles zeigen · Doppelklick im Baum: auf Auswahl zoomen · Strg+Klick: Mehrfachauswahl'],
+    [t('cmd.orbit'), t('help.orbit')],
+    [t('cmd.fly'), t('help.fly')],
+    [t('menu.sectioning'), t('help.sections')],
+    [t('cmd.dimension'), t('help.dims')],
+    [t('help.mouse'), t('help.mouseText')],
   ];
-  const rows = [...app.commands.values()].filter((c) => c.shortcut).map((c) => h('tr', h('td', t(c.label)), h('td', h('kbd', c.shortcut.split(',').join(' / ')))));
+  const rows = [...app.commands.values()].filter((c) => c.keys.length).map((c) => h('tr', h('td', t(c.label)), h('td', h('kbd', c.keys.join(' / ')))));
   dialog({
     title: t('cmd.shortcuts'), width: 720,
     body: h('div.shortcuts',
       h('table.grid', h('tbody', ...rows)),
-      h('table.grid', h('tbody', ...extra.map(([, l, d]) => h('tr', h('td', l), h('td', d))))),
-      h('p.muted', 'Hinweis: Manche Browser reservieren Strg+T, Strg+1…9 oder Strg+N. Alternativen: Shift+T (transparent) und die Ansichten im Menü „Navigation“. Als installierte App (PWA/Vollbild) funktionieren mehr Kürzel.')),
+      h('table.grid', h('tbody', ...extra.map(([l, d]) => h('tr', h('td', l), h('td', d))))),
+      h('p.muted', t('help.browserNote'))),
     buttons: [{ label: t('ui.close') }],
   });
 }
@@ -113,8 +111,8 @@ export function openAbout() {
     title: t('cmd.about'), width: 480,
     body: h('div.about',
       h('div.welcome-logo', h('span.logo-mark'), 'OpenZoom'),
-      h('p', 'Freier IFC-Viewer im Browser: Smart Views, Kollisionsprüfung, Schnitte, Bemaßung, Höhenkoten und BCF-Issues. Bedienung angelehnt an BIMcollab Zoom.'),
-      h('p.muted', 'Nicht verbunden mit KUBUS / BIMcollab. BIMcollab ist eine Marke der KUBUS B.V.'),
+      h('p', t('about.text')),
+      h('p.muted', t('about.notAffiliated')),
       h('p.muted', 'MIT-Lizenz · three.js (MIT) · web-ifc (MPL-2.0) · three-mesh-bvh (MIT) · fflate (MIT)')),
     buttons: [{ label: t('ui.close') }],
   });

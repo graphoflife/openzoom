@@ -2,10 +2,12 @@
  * BCF (BIM Collaboration Format) import / export.
  *
  * Writes BCF-XML 2.1 (default) or 3.0, reads 2.0 / 2.1 / 3.0.
- * Pure module: zip via fflate, XML written with string templates,
- * XML read with an injectable DOMParser (browser default).
+ * Pure module: zip via fflate, XML via ./xml.js (written as element trees,
+ * read with an injectable DOMParser, browser default).
  */
-import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate';
+import { zipSync, unzipSync, strFromU8 } from 'fflate';
+import { E, xmlDoc, parseXml, lname, elems, children, child, textOf, text, descendants, attr } from './xml.js';
+import { uuid } from './util.js';
 
 /**
  * @typedef {object} BcfCamera
@@ -63,39 +65,14 @@ import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate';
  * @property {BcfViewpoint[]} viewpoints
  */
 
-const XML_DECL = '<?xml version="1.0" encoding="UTF-8"?>\n';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const XSD_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?$/;
 const COLOR_RE = /^[0-9A-F]{6}([0-9A-F]{2})?$/;
 const DEFAULT_CAMERA = { type: 'perspective', position: [0, 0, 0], direction: [0, 1, 0], up: [0, 0, 1], fov: 60 };
-// Characters not allowed in XML 1.0 (control chars, lone surrogates, U+FFFE/FFFF)
-const INVALID_XML_CHARS =
-  /[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
-const ESC = {
-  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;',
-  '\r': '&#13;', '\n': '&#10;', '\t': '&#9;',
-};
 
 // ---------------------------------------------------------------------------
 // Public helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Create a random UUID v4 (lower case). Uses `crypto.randomUUID` when
- * available (secure contexts), otherwise `crypto.getRandomValues` / Math.random.
- * @returns {string}
- */
-export function newGuid() {
-  const c = globalThis.crypto;
-  if (c && typeof c.randomUUID === 'function') return c.randomUUID();
-  const b = new Uint8Array(16);
-  if (c && typeof c.getRandomValues === 'function') c.getRandomValues(b);
-  else for (let i = 0; i < 16; i++) b[i] = Math.floor(Math.random() * 256);
-  b[6] = (b[6] & 0x0f) | 0x40;
-  b[8] = (b[8] & 0x3f) | 0x80;
-  const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
-  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
-}
 
 /**
  * Convert an RGB colour (channels 0–255) to a BCF colour string.
@@ -151,36 +128,11 @@ function sniffImage(bytes) {
 }
 
 // ---------------------------------------------------------------------------
-// XML writing
+// Writing (element trees, see xml.js)
 // ---------------------------------------------------------------------------
 
-const escText = (s) => String(s).replace(INVALID_XML_CHARS, '').replace(/[&<>"'\r]/g, (c) => ESC[c]);
-const escAttr = (s) => String(s).replace(INVALID_XML_CHARS, '').replace(/[&<>"'\r\n\t]/g, (c) => ESC[c]);
-
-// Element node; children may be nodes, text, nested arrays or null (skipped).
-const E = (name, attrs, ...kids) => ({
-  name,
-  attrs: attrs || {},
-  kids: kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false),
-});
 // Optional text element: omitted when blank.
 const opt = (name, v) => (blank(v) ? null : E(name, null, String(v)));
-
-function render(node, ind = '') {
-  const a = Object.entries(node.attrs)
-    .filter(([, v]) => !blank(v))
-    .map(([k, v]) => ` ${k}="${escAttr(v)}"`)
-    .join('');
-  const { name, kids } = node;
-  if (!kids.length) return `${ind}<${name}${a}/>`;
-  if (kids.every((k) => typeof k !== 'object')) return `${ind}<${name}${a}>${escText(kids.join(''))}</${name}>`;
-  const inner = kids
-    .map((k) => (typeof k === 'object' ? render(k, `${ind}  `) : `${ind}  ${escText(k)}`))
-    .join('\n');
-  return `${ind}<${name}${a}>\n${inner}\n${ind}</${name}>`;
-}
-
-const xmlDoc = (root) => strToU8(`${XML_DECL}${render(root)}\n`);
 
 // Number with at most 6 decimals, no '-0'.
 function num(v) {
@@ -208,7 +160,7 @@ function point(name, p) {
 // Lower-case UUID, regenerated when missing, malformed or already used.
 function uniqueGuid(g, used) {
   let s = str(g).toLowerCase();
-  if (!UUID_RE.test(s) || used.has(s)) s = newGuid();
+  if (!UUID_RE.test(s) || used.has(s)) s = uuid();
   used.add(s);
   return s;
 }
@@ -427,7 +379,7 @@ export function exportBCF(issues, { version = '2.1', projectName = 'Projekt', pr
   files['bcf.version'] = xmlDoc(v3
     ? E('Version', { VersionId: '3.0' })
     : E('Version', { VersionId: '2.1' }, E('DetailedVersion', null, '2.1')));
-  const project = E('Project', { ProjectId: str(projectId) || newGuid() }, opt('Name', projectName));
+  const project = E('Project', { ProjectId: str(projectId) || uuid() }, opt('Name', projectName));
   files['project.bcfp'] = xmlDoc(v3
     ? E('ProjectInfo', null, project)
     : E('ProjectExtension', null, project, E('ExtensionSchema')));
@@ -457,54 +409,8 @@ export function exportBCF(issues, { version = '2.1', projectName = 'Projekt', pr
 }
 
 // ---------------------------------------------------------------------------
-// XML reading (namespace/prefix agnostic, lookup by localName)
+// Reading
 // ---------------------------------------------------------------------------
-
-const lname = (n) => String(n.localName || n.nodeName || '').replace(/^.*:/, '');
-
-function elems(el) {
-  const out = [];
-  if (!el) return out;
-  for (let n = el.firstChild; n; n = n.nextSibling) if (n.nodeType === 1) out.push(n);
-  return out;
-}
-
-// Direct children by name: exact match first, case-insensitive fallback.
-function children(el, name) {
-  const all = elems(el);
-  const exact = all.filter((c) => lname(c) === name);
-  if (exact.length) return exact;
-  const lower = name.toLowerCase();
-  return all.filter((c) => lname(c).toLowerCase() === lower);
-}
-
-const child = (el, name) => children(el, name)[0] || null;
-const textOf = (el) => (el ? String(el.textContent ?? '').trim() : '');
-const text = (el, name) => textOf(child(el, name));
-
-function descendants(el, name, out = []) {
-  const lower = name.toLowerCase();
-  for (const c of elems(el)) {
-    if (lname(c).toLowerCase() === lower) out.push(c);
-    descendants(c, name, out);
-  }
-  return out;
-}
-
-function attr(el, name) {
-  const list = el && el.attributes;
-  if (!list) return '';
-  const lower = name.toLowerCase();
-  let ci = '';
-  for (let i = 0; i < list.length; i++) {
-    const a = list.item(i);
-    const n = lname(a);
-    const v = String(a.value ?? a.nodeValue ?? '').trim();
-    if (n === name) return v;
-    if (!ci && n.toLowerCase() === lower) ci = v;
-  }
-  return ci;
-}
 
 function bool(v, def) {
   if (blank(v)) return def;
@@ -665,12 +571,8 @@ export function importBCF(data, { DOMParser: DP = globalThis.DOMParser } = {}) {
     const f = key && entries.get(key);
     if (!f) return null;
     try {
-      const doc = new DP().parseFromString(decodeText(f.bytes), 'application/xml');
-      const root = doc && doc.documentElement;
-      if (!root || lname(root) === 'parsererror' || doc.getElementsByTagName('parsererror').length) {
-        warnings.push(`Invalid XML: ${f.path}`);
-        return null;
-      }
+      const root = parseXml(decodeText(f.bytes), DP);
+      if (!root) warnings.push(`Invalid XML: ${f.path}`);
       return root;
     } catch (err) {
       warnings.push(`Invalid XML: ${f.path} (${err && err.message})`);
@@ -723,7 +625,7 @@ export function importBCF(data, { DOMParser: DP = globalThis.DOMParser } = {}) {
     const addViewpoint = (guidAttr, vpKey, snapKey, order) => {
       const vi = vpKey ? parse(vpKey) : null;
       const viGuid = vi ? attr(vi, 'Guid') : '';
-      const guid = guidAttr || viGuid || newGuid();
+      const guid = guidAttr || viGuid || uuid();
       if (vpKey) usedFiles.add(vpKey);
       if (snapKey) usedFiles.add(snapKey);
       for (const g of [guid, viGuid]) if (g && !refMap.has(g.toLowerCase())) refMap.set(g.toLowerCase(), guid);
@@ -765,7 +667,7 @@ export function importBCF(data, { DOMParser: DP = globalThis.DOMParser } = {}) {
     const comments = commentEls.map((c) => {
       const ref = attr(child(c, 'Viewpoint'), 'Guid');
       return {
-        guid: attr(c, 'Guid') || newGuid(),
+        guid: attr(c, 'Guid') || uuid(),
         date: text(c, 'Date'),
         author: text(c, 'Author'),
         comment: text(c, 'Comment'),
@@ -786,7 +688,7 @@ export function importBCF(data, { DOMParser: DP = globalThis.DOMParser } = {}) {
     const referencedModels = uniq(descendants(header, 'File').map((f) => text(f, 'Filename') || basename(text(f, 'Reference').replace(/\\/g, '/'))));
 
     issues.push({
-      guid: attr(topic, 'Guid') || (UUID_RE.test(folder) ? folder : newGuid()),
+      guid: attr(topic, 'Guid') || (UUID_RE.test(folder) ? folder : uuid()),
       title: text(topic, 'Title'),
       description: text(topic, 'Description'),
       status: attr(topic, 'TopicStatus') || text(topic, 'TopicStatus') || 'Open',

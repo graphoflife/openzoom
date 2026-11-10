@@ -2,7 +2,8 @@ import { h, showMenu, clear } from './dom.js';
 import { t, getLanguage } from '../i18n.js';
 import { classLabel } from '../core/ifc-classes.js';
 import { propertyGroups, getValue, valueText, fixedProperty } from '../core/props.js';
-import { rule, uuid } from '../core/smartviews.js';
+import { rule } from '../core/smartviews.js';
+import { uuid } from '../core/util.js';
 
 const MULTI_LIMIT = 400;
 

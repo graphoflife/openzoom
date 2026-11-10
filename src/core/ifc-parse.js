@@ -230,6 +230,7 @@ const str = (x) => {
   const v = val(x);
   return v === null || v === undefined ? '' : String(v);
 };
+const pushTo = (map, k, v) => { let a = map.get(k); if (!a) map.set(k, (a = [])); a.push(v); };
 
 function ids(modelID, type) {
   const v = api.GetLineIDsWithType(modelID, type, false);
@@ -421,21 +422,29 @@ function parseModel(modelID, fileName, offset, edges, id) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Metadata. Each pass reads one kind of relationship and returns its tables;
+// ctx = { modelID, units, reqId, L } with L(id) = the line or null.
+
 function extractMeta(modelID, schema, units, eidOf, order, reqId) {
-  const sIdx = schemaIndex(schema);
-  const supersMap = supersFor(sIdx);
-  const L = (id) => safeLine(modelID, id);
-  const lscale = units.lengthScale || 1;
+  const ctx = { modelID, units, reqId, L: (id) => safeLine(modelID, id) };
+  const { parent, fillHost } = collectStructure(ctx);
+  // Type psets are read lazily while building elements, so they follow the instance psets.
+  const { psets, psetsOf, psetFor } = collectPsets(ctx);
+  const { typeOf, typeInfo } = collectTypes(ctx, psetFor);
+  const { materials, matsOf } = collectMaterials(ctx);
+  const { classes, classOf } = collectClassifications(ctx);
+  const { groups, groupsOf } = collectGroups(ctx);
+  const projectIds = ids(modelID, WebIFC.IFCPROJECT);
+  registerNodes(ctx, projectIds, parent, eidOf);
+  const rel = { parent, fillHost, typeOf, typeInfo, psetsOf, matsOf, classOf, groupsOf };
+  const elements = buildElements(ctx, supersFor(schemaIndex(schema)), rel, eidOf, order);
+  return { elements, psets, materials, classes, groups, header: readHeader(modelID), project: readProject(ctx, projectIds) };
+}
 
+/** Spatial structure / aggregation: parent per child, and the wall a door/window fills. */
+function collectStructure({ modelID, L }) {
   const parent = new Map(); // child expressID -> parent expressID
-  const typeOf = new Map(); // element -> type object id
-  const psetsOf = new Map(); // element -> [pset index]
-  const matsOf = new Map(); // element -> material info index
-  const classOf = new Map(); // element -> [classification index]
-  const groupsOf = new Map(); // element -> [group index]
-  const push = (map, k, v) => { let a = map.get(k); if (!a) map.set(k, (a = [])); a.push(v); };
-
-  // Spatial structure / aggregation.
   for (const rid of ids(modelID, WebIFC.IFCRELAGGREGATES)) {
     const r = L(rid); if (!r) continue;
     const p = refId(r.RelatingObject);
@@ -471,50 +480,50 @@ function extractMeta(modelID, schema, units, eidOf, order, reqId) {
       }
     }
   }
+  return { parent, fillHost };
+}
 
-  // Types
-  const types = new Map(); // type id -> {name, cls, psets:[]}
-  for (const rid of ids(modelID, WebIFC.IFCRELDEFINESBYTYPE)) {
-    const r = L(rid); if (!r) continue;
-    const t = refId(r.RelatingType);
-    for (const c of r.RelatedObjects || []) typeOf.set(refId(c), t);
+/** Flatten properties / quantities into [name, value, unit] rows; complex ones become "Parent.Child". */
+function readProps(ctx, list, out, prefix = '') {
+  const { units, L } = ctx;
+  for (const pr of list || []) {
+    const p = L(refId(pr)); if (!p) continue;
+    const name = prefix + str(p.Name);
+    if (p.NominalValue !== undefined) {
+      out.push([name, plainValue(p.NominalValue), measureUnit(units, p.NominalValue && p.NominalValue.name)]);
+    } else if (p.EnumerationValues !== undefined) {
+      out.push([name, (p.EnumerationValues || []).map((x) => val(x)).join(', '), '']);
+    } else if (p.ListValues !== undefined) {
+      out.push([name, (p.ListValues || []).map((x) => val(x)).join(', '), '']);
+    } else if (p.UpperBoundValue !== undefined || p.LowerBoundValue !== undefined) {
+      const lo = plainValue(p.LowerBoundValue), hi = plainValue(p.UpperBoundValue);
+      out.push([name, `${lo ?? ''} – ${hi ?? ''}`, measureUnit(units, (p.UpperBoundValue || p.LowerBoundValue || {}).name)]);
+    } else if (p.HasProperties !== undefined) {
+      readProps(ctx, p.HasProperties, out, `${name}.`);
+    } else if (p.LengthValue !== undefined) {
+      out.push([name, Number(val(p.LengthValue)), units.length]);
+    } else if (p.AreaValue !== undefined) {
+      out.push([name, Number(val(p.AreaValue)), units.area]);
+    } else if (p.VolumeValue !== undefined) {
+      out.push([name, Number(val(p.VolumeValue)), units.volume]);
+    } else if (p.CountValue !== undefined) {
+      out.push([name, Number(val(p.CountValue)), '']);
+    } else if (p.WeightValue !== undefined) {
+      out.push([name, Number(val(p.WeightValue)), units.mass]);
+    } else if (p.TimeValue !== undefined) {
+      out.push([name, Number(val(p.TimeValue)), 's']);
+    } else if (p.HasQuantities !== undefined) {
+      readProps(ctx, p.HasQuantities, out, `${name}.`);
+    }
   }
+}
 
-  // Property sets
+/** Property sets: the pset table, instance psets per element, and psetFor(id, fromType) to add more. */
+function collectPsets(ctx) {
+  const { modelID, reqId, L } = ctx;
   const psets = [];
   const psetIndex = new Map();
-  const readProps = (list, out, prefix = '') => {
-    for (const pr of list || []) {
-      const p = L(refId(pr)); if (!p) continue;
-      const name = prefix + str(p.Name);
-      if (p.NominalValue !== undefined) {
-        out.push([name, plainValue(p.NominalValue), measureUnit(units, p.NominalValue && p.NominalValue.name)]);
-      } else if (p.EnumerationValues !== undefined) {
-        out.push([name, (p.EnumerationValues || []).map((x) => val(x)).join(', '), '']);
-      } else if (p.ListValues !== undefined) {
-        out.push([name, (p.ListValues || []).map((x) => val(x)).join(', '), '']);
-      } else if (p.UpperBoundValue !== undefined || p.LowerBoundValue !== undefined) {
-        const lo = plainValue(p.LowerBoundValue), hi = plainValue(p.UpperBoundValue);
-        out.push([name, `${lo ?? ''} – ${hi ?? ''}`, measureUnit(units, (p.UpperBoundValue || p.LowerBoundValue || {}).name)]);
-      } else if (p.HasProperties !== undefined) {
-        readProps(p.HasProperties, out, `${name}.`);
-      } else if (p.LengthValue !== undefined) {
-        out.push([name, Number(val(p.LengthValue)), units.length]);
-      } else if (p.AreaValue !== undefined) {
-        out.push([name, Number(val(p.AreaValue)), units.area]);
-      } else if (p.VolumeValue !== undefined) {
-        out.push([name, Number(val(p.VolumeValue)), units.volume]);
-      } else if (p.CountValue !== undefined) {
-        out.push([name, Number(val(p.CountValue)), '']);
-      } else if (p.WeightValue !== undefined) {
-        out.push([name, Number(val(p.WeightValue)), units.mass]);
-      } else if (p.TimeValue !== undefined) {
-        out.push([name, Number(val(p.TimeValue)), 's']);
-      } else if (p.HasQuantities !== undefined) {
-        readProps(p.HasQuantities, out, `${name}.`);
-      }
-    }
-  };
+  const psetsOf = new Map(); // element -> [pset index]
   const psetFor = (id, fromType) => {
     const key = `${id}:${fromType ? 1 : 0}`;
     if (psetIndex.has(key)) return psetIndex.get(key);
@@ -522,7 +531,7 @@ function extractMeta(modelID, schema, units, eidOf, order, reqId) {
     let idx = -1;
     if (ps && (ps.HasProperties !== undefined || ps.Quantities !== undefined)) {
       const props = [];
-      readProps(ps.HasProperties || ps.Quantities, props);
+      readProps(ctx, ps.HasProperties || ps.Quantities, props);
       idx = psets.length;
       psets.push({ n: str(ps.Name) || '(ohne Name)', p: props, q: ps.Quantities !== undefined ? 1 : 0, t: fromType ? 1 : 0 });
     }
@@ -539,10 +548,21 @@ function extractMeta(modelID, schema, units, eidOf, order, reqId) {
     for (const d of list) {
       const idx = psetFor(refId(d), false);
       if (idx < 0) continue;
-      for (const c of r.RelatedObjects || []) push(psetsOf, refId(c), idx);
+      for (const c of r.RelatedObjects || []) pushTo(psetsOf, refId(c), idx);
     }
   });
+  return { psets, psetsOf, psetFor };
+}
 
+/** Types: type object per element, and typeInfo(id) reading a type's name, class, psets on first use. */
+function collectTypes({ modelID, L }, psetFor) {
+  const typeOf = new Map(); // element -> type object id
+  for (const rid of ids(modelID, WebIFC.IFCRELDEFINESBYTYPE)) {
+    const r = L(rid); if (!r) continue;
+    const t = refId(r.RelatingType);
+    for (const c of r.RelatedObjects || []) typeOf.set(refId(c), t);
+  }
+  const types = new Map(); // type id -> {name, cls, psets:[], predef}
   const typeInfo = (tid) => {
     if (types.has(tid)) return types.get(tid);
     const t = L(tid);
@@ -551,53 +571,61 @@ function extractMeta(modelID, schema, units, eidOf, order, reqId) {
     types.set(tid, info);
     return info;
   };
+  return { typeOf, typeInfo };
+}
 
-  // Materials
-  const materials = []; // [{names:[...], layers:[{name, thickness}]}]
-  const matCache = new Map();
-  const matName = (id) => { const m = L(id); return m ? str(m.Name) : ''; };
-  const resolveMat = (id) => {
-    if (matCache.has(id)) return matCache.get(id);
-    const m = L(id);
-    const info = { names: [], layers: [] };
-    const cls = m ? upperName(api.GetLineType(modelID, id)) : '';
-    const addLayerSet = (lsId) => {
-      const ls = L(lsId); if (!ls) return;
-      if (ls.LayerSetName) info.set = str(ls.LayerSetName);
-      for (const lr of ls.MaterialLayers || []) {
-        const layer = L(refId(lr)); if (!layer) continue;
-        const nm = layer.Material ? matName(refId(layer.Material)) : str(layer.Name);
-        info.layers.push({ name: nm, thickness: Number(val(layer.LayerThickness)) || 0 });
-        info.names.push(nm);
-      }
-    };
-    if (!m) { /* nothing */ } else if (cls === 'IFCMATERIAL') info.names.push(str(m.Name));
-    else if (cls === 'IFCMATERIALLIST') for (const x of m.Materials || []) info.names.push(matName(refId(x)));
-    else if (cls === 'IFCMATERIALLAYERSETUSAGE') addLayerSet(refId(m.ForLayerSet));
-    else if (cls === 'IFCMATERIALLAYERSET') addLayerSet(id);
-    else if (cls === 'IFCMATERIALLAYER') info.names.push(m.Material ? matName(refId(m.Material)) : str(m.Name));
-    else if (cls === 'IFCMATERIALPROFILESETUSAGE') {
-      const ps = L(refId(m.ForProfileSet));
-      for (const pr of (ps && ps.MaterialProfiles) || []) { const p = L(refId(pr)); if (p && p.Material) info.names.push(matName(refId(p.Material))); }
-    } else if (cls === 'IFCMATERIALPROFILESET') {
-      for (const pr of m.MaterialProfiles || []) { const p = L(refId(pr)); if (p && p.Material) info.names.push(matName(refId(p.Material))); }
-    } else if (cls === 'IFCMATERIALCONSTITUENTSET') {
-      for (const cr of m.MaterialConstituents || []) { const c = L(refId(cr)); if (c && c.Material) info.names.push(matName(refId(c.Material))); }
-    } else if (m.Name) info.names.push(str(m.Name));
-    info.names = [...new Set(info.names.filter(Boolean))];
-    const idx = materials.length;
-    materials.push(info);
-    matCache.set(id, idx);
-    return idx;
+/** One material definition (material, list, layer set (usage), profile set (usage), constituents) as names + layers. */
+function readMaterial({ modelID, L }, id) {
+  const m = L(id);
+  const info = { names: [], layers: [] };
+  const cls = m ? upperName(api.GetLineType(modelID, id)) : '';
+  const matName = (mid) => { const x = L(mid); return x ? str(x.Name) : ''; };
+  const addLayerSet = (lsId) => {
+    const ls = L(lsId); if (!ls) return;
+    if (ls.LayerSetName) info.set = str(ls.LayerSetName);
+    for (const lr of ls.MaterialLayers || []) {
+      const layer = L(refId(lr)); if (!layer) continue;
+      const nm = layer.Material ? matName(refId(layer.Material)) : str(layer.Name);
+      info.layers.push({ name: nm, thickness: Number(val(layer.LayerThickness)) || 0 });
+      info.names.push(nm);
+    }
   };
-  for (const rid of ids(modelID, WebIFC.IFCRELASSOCIATESMATERIAL)) {
-    const r = L(rid); if (!r) continue;
-    const idx = resolveMat(refId(r.RelatingMaterial));
+  if (!m) { /* nothing */ } else if (cls === 'IFCMATERIAL') info.names.push(str(m.Name));
+  else if (cls === 'IFCMATERIALLIST') for (const x of m.Materials || []) info.names.push(matName(refId(x)));
+  else if (cls === 'IFCMATERIALLAYERSETUSAGE') addLayerSet(refId(m.ForLayerSet));
+  else if (cls === 'IFCMATERIALLAYERSET') addLayerSet(id);
+  else if (cls === 'IFCMATERIALLAYER') info.names.push(m.Material ? matName(refId(m.Material)) : str(m.Name));
+  else if (cls === 'IFCMATERIALPROFILESETUSAGE') {
+    const ps = L(refId(m.ForProfileSet));
+    for (const pr of (ps && ps.MaterialProfiles) || []) { const p = L(refId(pr)); if (p && p.Material) info.names.push(matName(refId(p.Material))); }
+  } else if (cls === 'IFCMATERIALPROFILESET') {
+    for (const pr of m.MaterialProfiles || []) { const p = L(refId(pr)); if (p && p.Material) info.names.push(matName(refId(p.Material))); }
+  } else if (cls === 'IFCMATERIALCONSTITUENTSET') {
+    for (const cr of m.MaterialConstituents || []) { const c = L(refId(cr)); if (c && c.Material) info.names.push(matName(refId(c.Material))); }
+  } else if (m.Name) info.names.push(str(m.Name));
+  info.names = [...new Set(info.names.filter(Boolean))];
+  return info;
+}
+
+/** Materials: one entry per distinct material definition, and the material index per element or type. */
+function collectMaterials(ctx) {
+  const materials = []; // [{names:[...], layers:[{name, thickness}], set?}]
+  const matCache = new Map(); // material definition id -> index
+  const matsOf = new Map(); // element -> material info index
+  for (const rid of ids(ctx.modelID, WebIFC.IFCRELASSOCIATESMATERIAL)) {
+    const r = ctx.L(rid); if (!r) continue;
+    const mid = refId(r.RelatingMaterial);
+    if (!matCache.has(mid)) matCache.set(mid, materials.push(readMaterial(ctx, mid)) - 1);
+    const idx = matCache.get(mid);
     for (const c of r.RelatedObjects || []) matsOf.set(refId(c), idx);
   }
+  return { materials, matsOf };
+}
 
-  // Classifications
+/** Classifications: one entry per association, and the classification indices per element. */
+function collectClassifications({ modelID, L }) {
   const classes = [];
+  const classOf = new Map(); // element -> [classification index]
   for (const rid of ids(modelID, WebIFC.IFCRELASSOCIATESCLASSIFICATION)) {
     const r = L(rid); if (!r) continue;
     const ref = L(refId(r.RelatingClassification)); if (!ref) continue;
@@ -607,12 +635,16 @@ function extractMeta(modelID, schema, units, eidOf, order, reqId) {
     const code = str(ref.Identification !== undefined ? ref.Identification : ref.ItemReference);
     const idx = classes.length;
     classes.push({ system: system || str(ref.Name), code, name: str(ref.Name) });
-    for (const c of r.RelatedObjects || []) push(classOf, refId(c), idx);
+    for (const c of r.RelatedObjects || []) pushTo(classOf, refId(c), idx);
   }
+  return { classes, classOf };
+}
 
-  // Groups / systems / zones
+/** Groups / systems / zones: one entry per group, and the group indices per element. */
+function collectGroups({ modelID, L }) {
   const groups = [];
   const groupIdx = new Map();
+  const groupsOf = new Map(); // element -> [group index]
   for (const rid of ids(modelID, WebIFC.IFCRELASSIGNSTOGROUP)) {
     const r = L(rid); if (!r) continue;
     const gid = refId(r.RelatingGroup);
@@ -621,36 +653,51 @@ function extractMeta(modelID, schema, units, eidOf, order, reqId) {
       groupIdx.set(gid, groups.length);
       groups.push({ name: g ? str(g.Name) : '', cls: className(api.GetLineType(modelID, gid)) });
     }
-    for (const c of r.RelatedObjects || []) push(groupsOf, refId(c), groupIdx.get(gid));
+    for (const c of r.RelatedObjects || []) pushTo(groupsOf, refId(c), groupIdx.get(gid));
   }
+  return { groups, groupsOf };
+}
 
-  // Register spatial nodes and all related objects so they get an index.
-  const projectIds = ids(modelID, WebIFC.IFCPROJECT);
+/** Register spatial nodes and all related objects so they get an index (after the geometry elements). */
+function registerNodes({ modelID }, projectIds, parent, eidOf) {
   for (const p of projectIds) eidOf(p);
   const spatialTypes = [WebIFC.IFCSITE, WebIFC.IFCBUILDING, WebIFC.IFCBUILDINGSTOREY, WebIFC.IFCSPACE];
   for (const t of spatialTypes) for (const i of ids(modelID, t)) eidOf(i);
   for (const [child, p] of parent) { eidOf(p); eidOf(child); }
+}
 
-  const project = projectIds.length ? L(projectIds[0]) : null;
+/** Class name of an IFC type code followed by the names of all its supertypes. */
+function superChain(supersMap, code, cls) {
+  const supers = [cls];
+  const stack = [code];
+  const seen = new Set();
+  while (stack.length) {
+    const c = stack.pop();
+    for (const s of supersMap.get(c) || []) {
+      if (seen.has(s)) continue;
+      seen.add(s);
+      supers.push(className(s));
+      stack.push(s);
+    }
+  }
+  return supers;
+}
+
+/** One element record per registered expressID, in index order. */
+function buildElements(ctx, supersMap, rel, eidOf, order) {
+  const { modelID, units, reqId, L } = ctx;
+  const { parent, fillHost, typeOf, typeInfo, psetsOf, matsOf, classOf, groupsOf } = rel;
+  const lscale = units.lengthScale || 1;
   const elements = [];
+  // Parents and hosts first referenced here are appended to order by eidOf while
+  // iterating, so the loop covers them too.
   for (let e = 0; e < order.length; e++) {
     if (e % 5000 === 0) progress(reqId, 'elements', e / order.length);
     const id = order[e];
     const line = L(id);
     const code = api.GetLineType(modelID, id);
     const cls = className(code);
-    const supers = [cls];
-    const stack = [code];
-    const seen = new Set();
-    while (stack.length) {
-      const c = stack.pop();
-      for (const s of supersMap.get(c) || []) {
-        if (seen.has(s)) continue;
-        seen.add(s);
-        supers.push(className(s));
-        stack.push(s);
-      }
-    }
+    const supers = superChain(supersMap, code, cls);
     const el = {
       id, cls, supers,
       guid: line ? str(line.GlobalId) : '',
@@ -695,9 +742,11 @@ function extractMeta(modelID, schema, units, eidOf, order, reqId) {
     if (el.predef === 'NOTDEFINED' || el.predef === 'USERDEFINED') el.predef = el.predef === 'USERDEFINED' && el.objType ? el.objType : '';
     elements.push(el);
   }
+  return elements;
+}
 
-  // Elements created after the loop (parents referenced late) were appended to
-  // order while iterating, so the loop above already covered them.
+/** File header (FILE_NAME): date, author, organization, application. */
+function readHeader(modelID) {
   const header = {};
   try {
     const fn = api.GetHeaderLine(modelID, WebIFC.FILE_NAME);
@@ -709,9 +758,11 @@ function extractMeta(modelID, schema, units, eidOf, order, reqId) {
       header.application = str(a[5]);
     }
   } catch { /* optional */ }
+  return header;
+}
 
-  return {
-    elements, psets, materials, classes, groups, header,
-    project: project ? { name: str(project.Name), longName: str(project.LongName), phase: str(project.Phase), desc: str(project.Description) } : {},
-  };
+/** Name, long name, phase and description of the first IfcProject ({} without one). */
+function readProject({ L }, projectIds) {
+  const project = projectIds.length ? L(projectIds[0]) : null;
+  return project ? { name: str(project.Name), longName: str(project.LongName), phase: str(project.Phase), desc: str(project.Description) } : {};
 }

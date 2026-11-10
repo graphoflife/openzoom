@@ -1,7 +1,7 @@
 import { h, clear, showMenu, confirmDialog, dialog } from './dom.js';
 import { icon } from './icons.js';
 import { t, getLanguage } from '../i18n.js';
-import { newGuid } from '../core/bcf.js';
+import { uuid } from '../core/util.js';
 
 const STATUS = ['Open', 'Active', 'Resolved', 'Closed'];
 const TYPES = ['Issue', 'Clash', 'Request', 'Remark', 'Fault', 'Inquiry'];
@@ -109,7 +109,7 @@ export class IssuesPanel {
           on: {
             click: () => {
               if (!newComment.value.trim()) return;
-              (issue.comments ||= []).push({ guid: newGuid(), date: new Date().toISOString(), author: this.mgr.author(), comment: newComment.value.trim(), modifiedDate: '', modifiedAuthor: '', viewpointGuid: issue.viewpoints?.[0]?.guid || null });
+              (issue.comments ||= []).push({ guid: uuid(), date: new Date().toISOString(), author: this.mgr.author(), comment: newComment.value.trim(), modifiedDate: '', modifiedAuthor: '', viewpointGuid: issue.viewpoints?.[0]?.guid || null });
               touch();
             },
           },
