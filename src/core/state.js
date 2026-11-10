@@ -1,6 +1,5 @@
-import { CATEGORIES } from './ifc-classes.js';
-
-const isOpening = (el) => el.supers.includes('IfcOpeningElement');
+import { CATEGORIES, isGated, isAuxiliary } from './ifc-classes.js';
+import { packRgb } from './models.js';
 
 function toB64(u8) {
   let s = '';
@@ -16,6 +15,15 @@ function fromB64(str) {
 }
 
 /**
+ * A complete element view for `ElementState.applyView`: per model visibility,
+ * transparency and packed colour (-1 = none). Smart views, BCF viewpoints and
+ * the clash focus produce one instead of writing element state themselves.
+ */
+export function blankView(models) {
+  return models.map((model) => ({ model, vis: new Uint8Array(model.count), ghost: new Uint8Array(model.count), color: new Int32Array(model.count).fill(-1) }));
+}
+
+/**
  * Element visibility / transparency / color with undo-redo history,
  * "My View" and the selection. All element references are global ids (gid).
  */
@@ -28,34 +36,17 @@ export class ElementState extends EventTarget {
     this.myView = new Set();
     this.selection = new Set();
     this.hoverGid = -1;
-    this.legend = null; // smart view legend [{color, label, count}]
-    // global view settings like Zoom's Alt+S / Alt+O: spaces and openings only show when switched on
-    this.showSpaces = false;
-    this.showOpenings = false;
-    this.skipChild = (el) => (!this.showSpaces && el.cls === 'IfcSpace') || (!this.showOpenings && isOpening(el));
+    this.legend = null; // {title, entries: [{color, label, count, gids, takeoff?}]}
+    // gated categories switched on with their Alt toggle (Alt+S spaces, Alt+O openings)
+    this.revealed = new Set();
+    this.skipChild = (el) => isGated(el) && !this.revealed.has(el.category);
   }
 
   get models() { return this.app.models.models; }
 
   // --- history -------------------------------------------------------------
-  /**
-   * Compact snapshot: one byte per element (bit 0 visible, bit 1 transparent) and
-   * the colour overrides only for models that have any.
-   */
   snapshot() {
-    return {
-      legend: this.legend, showSpaces: this.showSpaces, showOpenings: this.showOpenings,
-      models: this.models.map((m) => {
-        const f = m.flags, c = m.colors;
-        const bits = new Uint8Array(m.count);
-        let colored = false;
-        for (let i = 0; i < m.count; i++) {
-          bits[i] = (f[i * 4] ? 1 : 0) | (f[i * 4 + 1] ? 2 : 0);
-          if (c[i * 4 + 3]) colored = true;
-        }
-        return { m, bits, colors: colored ? c.slice(0, m.count * 4) : null };
-      }),
-    };
+    return { legend: this.legend, revealed: [...this.revealed], models: this.models.map((m) => ({ m, ...m.packState() })) };
   }
 
   /** Call before every user-visible change of visibility/colour. */
@@ -66,43 +57,28 @@ export class ElementState extends EventTarget {
   }
 
   restore(snap) {
-    for (const s of snap.models) {
-      if (!this.models.includes(s.m)) continue;
-      // selection/hover channels stay as they are
-      const f = s.m.flags;
-      for (let i = 0; i < s.m.count; i++) { f[i * 4] = s.bits[i] & 1 ? 255 : 0; f[i * 4 + 1] = s.bits[i] & 2 ? 255 : 0; }
-      if (s.colors) s.m.colors.set(s.colors); else s.m.colors.fill(0);
-    }
+    // selection/hover channels stay as they are
+    for (const s of snap.models) if (this.models.includes(s.m)) s.m.unpackState(s);
     this.legend = snap.legend;
-    this.showSpaces = snap.showSpaces;
-    this.showOpenings = snap.showOpenings;
+    this.revealed = new Set(snap.revealed);
     this.changed();
   }
 
-  /** Drop every reference to a removed model (history, legend, My View). */
+  /** Drop every reference to a removed model (history, My View). Legend gids of it simply match nothing. */
   forgetModel(model) {
     for (const stack of [this.undoStack, this.redoStack]) for (const s of stack) s.models = s.models.filter((x) => x.m !== model);
-    const uses = (legend) => legend?.some((e) => e.items?.some(([w]) => w.model === model));
-    if (uses(this.legend)) this.legend = null;
-    for (const stack of [this.undoStack, this.redoStack]) for (const s of stack) if (uses(s.legend)) s.legend = null;
     for (const gid of [...this.myView]) if (gid >= model.base && gid < model.base + model.count) this.myView.delete(gid);
   }
 
   /** Visibility, transparency and colours of a model for the project file. */
   serializeModel(m) {
-    const bits = new Uint8Array(m.count);
-    for (let i = 0; i < m.count; i++) bits[i] = (m.flags[i * 4] ? 1 : 0) | (m.flags[i * 4 + 1] ? 2 : 0);
-    let colored = false;
-    for (let i = 0; i < m.count && !colored; i++) if (m.colors[i * 4 + 3]) colored = true;
-    return { count: m.count, bits: toB64(bits), colors: colored ? toB64(m.colors.subarray(0, m.count * 4)) : null };
+    const { bits, colors } = m.packState();
+    return { count: m.count, bits: toB64(bits), colors: colors ? toB64(colors) : null };
   }
 
   restoreModel(m, data) {
     if (!data || data.count !== m.count) return; // file changed since the project was saved
-    const bits = fromB64(data.bits);
-    for (let i = 0; i < m.count; i++) { m.flags[i * 4] = bits[i] & 1 ? 255 : 0; m.flags[i * 4 + 1] = bits[i] & 2 ? 255 : 0; }
-    if (data.colors) m.colors.set(fromB64(data.colors));
-    m.touch();
+    m.unpackState({ bits: fromB64(data.bits), colors: data.colors ? fromB64(data.colors) : null });
   }
 
   undo() {
@@ -125,6 +101,30 @@ export class ElementState extends EventTarget {
     this.app.viewer.requestRender();
   }
 
+  /** The current element state as a view (see blankView). */
+  currentView() {
+    return this.models.map((m) => {
+      const v = { model: m, vis: new Uint8Array(m.count), ghost: new Uint8Array(m.count), color: new Int32Array(m.count) };
+      for (let i = 0; i < m.count; i++) { v.vis[i] = m.isVisible(i) ? 1 : 0; v.ghost[i] = m.isGhost(i) ? 1 : 0; v.color[i] = m.colorOf(i); }
+      return v;
+    });
+  }
+
+  /**
+   * Replace everything a snapshot holds in one undoable step: the element view,
+   * its legend and (optionally) the revealed categories.
+   */
+  applyView(view, { legend = null, revealed = this.revealed } = {}) {
+    this.record();
+    for (const { model: m, vis, ghost, color } of view) {
+      if (!this.models.includes(m)) continue;
+      for (let i = 0; i < m.count; i++) { m.setVisible(i, vis[i]); m.setGhost(i, ghost[i]); m.setColor(i, color[i]); }
+    }
+    this.legend = legend;
+    this.revealed = new Set(revealed);
+    this.changed();
+  }
+
   // --- low level -------------------------------------------------------------
   each(gids, fn) {
     for (const gid of this.app.models.expand(gids)) {
@@ -133,14 +133,11 @@ export class ElementState extends EventTarget {
     }
   }
 
-  setVisible(gids, v) { this.each(gids, (m, i) => { m.flags[i * 4] = v ? 255 : 0; }); }
-  setGhost(gids, v) { this.each(gids, (m, i) => { m.flags[i * 4 + 1] = v ? 255 : 0; }); }
+  setVisible(gids, v) { this.each(gids, (m, i) => m.setVisible(i, v)); }
+  setGhost(gids, v) { this.each(gids, (m, i) => m.setGhost(i, v)); }
   setColor(gids, rgb) {
-    this.each(gids, (m, i) => {
-      const c = m.colors;
-      if (rgb) { c[i * 4] = rgb[0]; c[i * 4 + 1] = rgb[1]; c[i * 4 + 2] = rgb[2]; c[i * 4 + 3] = 255; }
-      else c[i * 4 + 3] = 0;
-    });
+    const p = rgb ? packRgb(rgb) : -1;
+    this.each(gids, (m, i) => m.setColor(i, p));
   }
 
   isVisible(gid) {
@@ -166,7 +163,7 @@ export class ElementState extends EventTarget {
     const keep = this.app.models.expand(gids);
     if (!keep.size) return;
     this.record();
-    for (const m of this.models) for (let i = 0; i < m.count; i++) m.flags[i * 4] = keep.has(m.base + i) ? 255 : 0;
+    for (const m of this.models) for (let i = 0; i < m.count; i++) m.setVisible(i, keep.has(m.base + i));
     this.changed();
   }
 
@@ -175,7 +172,7 @@ export class ElementState extends EventTarget {
     const list = [...gids];
     if (!list.length) return;
     let anyOpaque = false;
-    this.each(list, (m, i) => { if (!m.flags[i * 4 + 1]) anyOpaque = true; });
+    this.each(list, (m, i) => { if (!m.isGhost(i)) anyOpaque = true; });
     this.record();
     this.setGhost(list, anyOpaque);
     this.changed();
@@ -184,7 +181,7 @@ export class ElementState extends EventTarget {
   ghostOthers(gids) {
     const keep = this.app.models.expand(gids);
     this.record();
-    for (const m of this.models) for (let i = 0; i < m.count; i++) m.flags[i * 4 + 1] = keep.has(m.base + i) ? 0 : 255;
+    for (const m of this.models) for (let i = 0; i < m.count; i++) m.setGhost(i, !keep.has(m.base + i));
     this.changed();
   }
 
@@ -193,14 +190,15 @@ export class ElementState extends EventTarget {
   showAll() {
     this.record();
     for (const m of this.models) for (let i = 0; i < m.count; i++) {
-      if (!this.skipChild(m.elements[i])) m.flags[i * 4] = 255;
+      const el = m.elements[i];
+      if (!this.skipChild(el) && !isAuxiliary(el)) m.setVisible(i, true);
     }
     this.changed();
   }
 
   hideAll() {
     this.record();
-    for (const m of this.models) for (let i = 0; i < m.count; i++) m.flags[i * 4] = 0;
+    for (const m of this.models) for (let i = 0; i < m.count; i++) m.setVisible(i, false);
     this.changed();
   }
 
@@ -208,8 +206,7 @@ export class ElementState extends EventTarget {
   restoreView() {
     this.record();
     for (const m of this.models) m.resetState();
-    this.showSpaces = false;
-    this.showOpenings = false;
+    this.revealed.clear();
     this.legend = null;
     this.changed();
   }
@@ -227,11 +224,10 @@ export class ElementState extends EventTarget {
     }
     if (!gids.length) return false;
     this.record();
-    if (key === 'spaces') this.showSpaces = !anyVisible;
-    if (key === 'openings') this.showOpenings = !anyVisible;
+    if (cat.gated) { if (anyVisible) this.revealed.delete(key); else this.revealed.add(key); }
     for (const gid of gids) {
       const m = this.app.models.modelOf(gid);
-      m.flags[(gid - m.base) * 4] = anyVisible ? 0 : 255;
+      m.setVisible(gid - m.base, !anyVisible);
     }
     this.changed();
     return !anyVisible;
@@ -258,7 +254,7 @@ export class ElementState extends EventTarget {
   showMyView() {
     if (!this.myView.size) return false;
     this.record();
-    for (const m of this.models) for (let i = 0; i < m.count; i++) m.flags[i * 4] = this.myView.has(m.base + i) ? 255 : 0;
+    for (const m of this.models) for (let i = 0; i < m.count; i++) m.setVisible(i, this.myView.has(m.base + i));
     this.changed();
     return true;
   }
@@ -282,8 +278,8 @@ export class ElementState extends EventTarget {
   }
 
   syncSelection() {
-    for (const m of this.models) for (let i = 0; i < m.count; i++) m.flags[i * 4 + 2] = 0;
-    this.each([...this.selection], (m, i) => { m.flags[i * 4 + 2] = 255; });
+    for (const m of this.models) for (let i = 0; i < m.count; i++) m.setSelected(i, false);
+    this.each([...this.selection], (m, i) => m.setSelected(i, true));
     for (const m of this.models) m.touch();
     this.dispatchEvent(new Event('selection'));
     this.app.viewer.requestRender();
@@ -302,10 +298,10 @@ export class ElementState extends EventTarget {
   setHover(gid) {
     if (gid === this.hoverGid) return;
     const prev = this.app.models.modelOf(this.hoverGid);
-    if (prev) { prev.flags[(this.hoverGid - prev.base) * 4 + 3] = 0; prev.flagTex.needsUpdate = true; }
+    if (prev) prev.setHover(this.hoverGid - prev.base, false);
     this.hoverGid = gid;
     const m = this.app.models.modelOf(gid);
-    if (m) { m.flags[(gid - m.base) * 4 + 3] = 255; m.flagTex.needsUpdate = true; }
+    if (m) m.setHover(gid - m.base, true);
     this.app.viewer.requestRender();
   }
 }

@@ -71,7 +71,7 @@ export class ListsPanel {
     const M = this.app.models;
     if (this.source === 'selection') return st.selectedGeometry();
     if (this.source === 'visible') return st.visibleGids();
-    return M.allGids((m, i, el) => m.hasGeom[i] && el.cls !== 'IfcOpeningElement');
+    return M.allGids((m, i, el) => m.hasGeom[i] && el.category !== 'openings');
   }
 
   compute() {

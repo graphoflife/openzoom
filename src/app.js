@@ -8,7 +8,7 @@ import { Controls } from './core/controls.js';
 import { Sections } from './core/sections.js';
 import { Measure } from './core/measure.js';
 import { ClashManager } from './core/clash.js';
-import { SmartViewLibrary, evaluate, applyResult } from './core/smartviews.js';
+import { SmartViewLibrary, evaluate } from './core/smartviews.js';
 import { IssueManager } from './core/issues.js';
 import { Annotations } from './core/annotations.js';
 import { sharedUniforms } from './core/materials.js';
@@ -575,7 +575,7 @@ export class App {
       myView: guidsOf(this.state.myView),
       view: {
         camera: this.issues.captureViewpoint().camera,
-        showSpaces: this.state.showSpaces, showOpenings: this.state.showOpenings,
+        revealed: [...this.state.revealed],
         sections: this.sections.serialize(),
       },
     };
@@ -610,8 +610,8 @@ export class App {
     }
     const view = project.view;
     if (view) {
-      this.state.showSpaces = !!view.showSpaces;
-      this.state.showOpenings = !!view.showOpenings;
+      // files saved before the revealed set kept two flags
+      this.state.revealed = new Set(view.revealed || [view.showSpaces && 'spaces', view.showOpenings && 'openings'].filter(Boolean));
       this.state.changed();
       this.sections.deserialize(view.sections);
       if (view.camera) this.issues.applyCamera(view.camera);
@@ -744,34 +744,33 @@ export class App {
     navigator.clipboard?.writeText(text).then(() => toast(t('msg.copied'))).catch(() => {});
   }
 
-  /** Apply a smart view by guid (from the panel or a project). */
+  /** Apply a smart view (from the panel or a project). */
   applySmartView(view) {
     if (!this.models.models.length) return;
     const res = evaluate(view, this.models.models, this.state.skipChild);
-    applyResult(this, res);
     this.smartViews.activeGuid = view.guid;
-    this.legendTitle = view.title;
-    this.renderLegend();
+    this.state.applyView(res.perModel, { legend: res.legend });
   }
 
   renderLegend() {
     const el = this.legendEl;
     el.innerHTML = '';
     const legend = this.state.legend;
-    if (!legend || !legend.length || this.settings.get('legend') === false) { el.classList.remove('show'); return; }
+    if (!legend || this.settings.get('legend') === false) { el.classList.remove('show'); return; }
+    const entries = legend.entries;
     el.classList.add('show');
-    el.appendChild(h('div.legend-title', this.legendTitle || t('sv.legend')));
+    el.appendChild(h('div.legend-title', legend.title || t('sv.legend')));
     const list = h('div.legend-list');
-    for (const entry of legend.slice(0, 60)) {
+    for (const entry of entries.slice(0, 60)) {
       const row = h('div.legend-row', { title: entry.label },
         h('span.swatch', { style: { background: `rgb(${entry.color.join(',')})` } }),
         h('span.legend-label', entry.label),
         h('span.legend-count', String(entry.count)),
         entry.takeoff !== null && entry.takeoff !== undefined ? h('span.legend-takeoff', this.fmtNum(entry.takeoff, 2)) : null);
-      if (entry.items) row.addEventListener('click', (ev) => this.state.select(entry.items.map(([w, i]) => w.model.base + i), ev.ctrlKey ? 'add' : 'replace'));
+      row.addEventListener('click', (ev) => this.state.select(entry.gids, ev.ctrlKey ? 'add' : 'replace'));
       list.appendChild(row);
     }
-    if (legend.length > 60) list.appendChild(h('div.muted', `… ${legend.length - 60}`));
+    if (entries.length > 60) list.appendChild(h('div.muted', `… ${entries.length - 60}`));
     el.appendChild(list);
   }
 

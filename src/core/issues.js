@@ -1,5 +1,11 @@
 import * as THREE from 'three';
 import { exportBCF, importBCF, newGuid, colorToBcf, bcfToColor } from './bcf.js';
+import { isGated } from './ifc-classes.js';
+import { packRgb, unpackRgb } from './models.js';
+import { blankView } from './state.js';
+
+// BCF view setup hints for the gated categories
+const HINTS = { spaces: 'spacesVisible', openings: 'openingsVisible' };
 
 // Tiny IndexedDB key/value store (issues contain snapshots, too big for localStorage).
 const DB = 'openzoom';
@@ -56,7 +62,7 @@ export class IssueManager extends EventTarget {
       : { type: 'perspective', position: M.toIfc(cam.position), direction: M.dirToIfc(dir), up: M.dirToIfc(up), fov: cam.fov, aspectRatio: app.viewer.aspect };
     const visible = [], hidden = [];
     const colors = new Map();
-    let spacesVisible = false, openingsVisible = false;
+    const hints = { spacesVisible: false, spaceBoundariesVisible: false, openingsVisible: false };
     for (const m of M.models) {
       for (let i = 0; i < m.count; i++) {
         if (!m.hasGeom[i]) continue;
@@ -64,10 +70,10 @@ export class IssueManager extends EventTarget {
         if (!el.guid) continue;
         const vis = m.visible && m.isVisible(i);
         (vis ? visible : hidden).push(el.guid);
-        if (vis && el.cls === 'IfcSpace') spacesVisible = true;
-        if (vis && el.supers.includes('IfcOpeningElement')) openingsVisible = true;
-        if (vis && m.colors[i * 4 + 3]) {
-          const key = colorToBcf(m.colors[i * 4], m.colors[i * 4 + 1], m.colors[i * 4 + 2]);
+        if (vis && isGated(el)) hints[HINTS[el.category]] = true;
+        const color = m.colorOf(i);
+        if (vis && color >= 0) {
+          const key = colorToBcf(...unpackRgb(color));
           if (!colors.has(key)) colors.set(key, []);
           colors.get(key).push(el.guid);
         }
@@ -85,7 +91,7 @@ export class IssueManager extends EventTarget {
         visibilityDefault: defaultVisible,
         exceptions: defaultVisible ? hidden : visible,
         coloring: [...colors].map(([color, guids]) => ({ color, guids })),
-        viewSetupHints: { spacesVisible, spaceBoundariesVisible: false, openingsVisible },
+        viewSetupHints: hints,
       },
       clippingPlanes: app.sections.toBcf(),
       lines: app.measure.toBcfLines(),
@@ -138,34 +144,29 @@ export class IssueManager extends EventTarget {
     const M = app.models;
     const c = vp.components || {};
     if (M.models.length) {
-      app.state.record();
       const exc = new Set(c.exceptions || []);
       const def = c.visibilityDefault !== false;
       const hints = c.viewSetupHints || {};
-      app.state.showSpaces = !!hints.spacesVisible;
-      app.state.showOpenings = !!hints.openingsVisible;
+      const revealed = new Set(Object.keys(HINTS).filter((k) => hints[HINTS[k]]));
       const colorOf = new Map();
       for (const col of c.coloring || []) {
         const rgb = bcfToColor(col.color);
-        if (rgb) for (const g of col.guids) colorOf.set(g, rgb);
+        if (rgb) for (const g of col.guids) colorOf.set(g, packRgb([rgb.r, rgb.g, rgb.b]));
       }
-      for (const m of M.models) {
+      const view = blankView(M.models);
+      for (const { model: m, vis, color } of view) {
         // BCF has no model switch: element visibility carries it, so show the model itself
         m.visible = true;
         m.group.visible = true;
         for (let i = 0; i < m.count; i++) {
           const el = m.elements[i];
-          let vis = exc.has(el.guid) ? !def : def;
-          if (el.cls === 'IfcSpace' && !hints.spacesVisible && !exc.has(el.guid)) vis = false;
-          if (el.supers.includes('IfcOpeningElement') && !hints.openingsVisible && !exc.has(el.guid)) vis = false;
-          m.flags[i * 4] = vis ? 255 : 0;
-          m.flags[i * 4 + 1] = 0;
-          const rgb = colorOf.get(el.guid);
-          if (rgb) { m.colors[i * 4] = rgb.r; m.colors[i * 4 + 1] = rgb.g; m.colors[i * 4 + 2] = rgb.b; m.colors[i * 4 + 3] = 255; } else m.colors[i * 4 + 3] = 0;
+          // spaces/openings follow the view setup hints unless listed explicitly
+          if (exc.has(el.guid)) vis[i] = def ? 0 : 1;
+          else vis[i] = def && (!isGated(el) || revealed.has(el.category)) ? 1 : 0;
+          color[i] = colorOf.get(el.guid) ?? -1;
         }
       }
-      app.state.legend = null;
-      app.state.changed();
+      app.state.applyView(view, { revealed });
       const sel = [];
       for (const g of c.selection || []) { const gid = M.findByGuid(g); if (gid >= 0) sel.push(gid); }
       app.state.select(sel);

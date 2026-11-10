@@ -54,8 +54,9 @@ npm install
 npm run dev        # http://localhost:5173
 npm run build      # statischer Build in dist/
 npm run demo       # Demo-IFC-Modelle neu erzeugen (public/demo)
-npm run check      # Demo-Modelle mit web-ifc prüfen + Parser-Smoke-Test
+npm run check      # Demo-Modelle mit web-ifc prüfen, Parser-Smoke-Test, Eigenschaftskatalog gegen Smart-View-Auswertung
 node scripts/smoke-test.mjs datei.ifc   # beliebige IFC-Datei mit dem Parser prüfen
+node scripts/check-catalog.mjs datei.ifc # jeder angebotene Eigenschaftswert findet genau seine Elemente
 ```
 
 Aufbau: `src/core` (Laden im Web-Worker, Rendering mit three.js, Element-Zustand als GPU-Textur, Smart Views, Kollisionen, Schnitte, Messen, BCF) und `src/ui` (Menüs, Panels, Dialoge). Ein Push auf `main` baut und veröffentlicht über GitHub Actions auf GitHub Pages.

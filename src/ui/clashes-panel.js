@@ -3,7 +3,9 @@ import { h, clear, dialog, showMenu, download, toast, confirmDialog } from './do
 import { icon } from './icons.js';
 import { t, getLanguage } from '../i18n.js';
 import { classLabel } from '../core/ifc-classes.js';
+import { packRgb } from '../core/models.js';
 
+const COLOR_A = [230, 40, 40], COLOR_B = [40, 170, 60];
 const STATUSES = ['new', 'active', 'resolved', 'ignored', 'approved'];
 const ABSTRACT = ['IfcBuildingElement', 'IfcBuiltElement', 'IfcDistributionElement', 'IfcDistributionFlowElement', 'IfcFlowSegment', 'IfcFlowFitting', 'IfcFlowTerminal', 'IfcElement'];
 
@@ -212,20 +214,27 @@ export class ClashesPanel {
     const ga = resolve(r.guidA, r.a), gb = resolve(r.guidB, r.b);
     if (ga < 0 || gb < 0) return;
     this.focused = r;
-    app.state.record();
-    for (const m of M.models) {
-      for (let i = 0; i < m.count; i++) { m.flags[i * 4 + 1] = 255; m.colors[i * 4 + 3] = 0; }
-    }
-    app.state.setVisible([ga, gb], true);
-    app.state.setGhost([ga, gb], false);
-    app.state.setColor([ga], [230, 40, 40]);
-    app.state.setColor([gb], [40, 170, 60]);
-    app.state.legend = [
-      { color: [230, 40, 40], label: `A: ${r.nameA}`, count: 1 },
-      { color: [40, 170, 60], label: `B: ${r.nameB}`, count: 1 },
-    ];
-    app.legendTitle = this.selected?.name;
-    app.state.changed();
+    // everything else stays as visible as it is, but transparent and uncoloured
+    const focusView = app.state.currentView();
+    for (const v of focusView) { v.ghost.fill(1); v.color.fill(-1); }
+    const mark = (gid, rgb) => {
+      for (const g of M.expand([gid])) {
+        const v = focusView.find((x) => x.model === M.modelOf(g));
+        const i = g - v.model.base;
+        v.vis[i] = 1; v.ghost[i] = 0; v.color[i] = packRgb(rgb);
+      }
+    };
+    mark(ga, COLOR_A);
+    mark(gb, COLOR_B);
+    app.state.applyView(focusView, {
+      legend: {
+        title: this.selected?.name,
+        entries: [
+          { color: COLOR_A, label: `A: ${r.nameA}`, count: 1, gids: [ga] },
+          { color: COLOR_B, label: `B: ${r.nameB}`, count: 1, gids: [gb] },
+        ],
+      },
+    });
     const point = new THREE.Vector3().fromArray(r.point);
     const box = M.boxOf([ga, gb]);
     const clamp = new THREE.Box3().setFromCenterAndSize(point, new THREE.Vector3(5, 5, 5));

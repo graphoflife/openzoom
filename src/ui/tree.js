@@ -111,7 +111,7 @@ export class TreePanel {
       for (const m of M.models) {
         for (let i = 0; i < m.count; i++) {
           const el = m.elements[i];
-          if (SPATIAL.has(el.cls) || el.supers.includes('IfcOpeningElement')) continue;
+          if (SPATIAL.has(el.cls) || el.category === 'openings') continue;
           if (!m.hasGeom[i] && !m.children[i].length) continue;
           members.push([m, i]);
         }

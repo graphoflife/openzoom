@@ -1,12 +1,19 @@
 import * as THREE from 'three';
 import { MeshBVH } from 'three-mesh-bvh';
 import { createMeshMaterial, createEdgeMaterial } from './materials.js';
-import { HIDDEN_BY_DEFAULT, SPATIAL, categoryOf } from './ifc-classes.js';
+import { SPATIAL, categoryOf, isGated, isAuxiliary } from './ifc-classes.js';
 import { clearGeometryCache } from './elementgeom.js';
 
 const TEX_W = 4096; // 4096 x 4096 texels covers 16 M elements
 let nextModelId = 1;
 let nextBase = 0;
+
+// Element state texel channels (read by the shaders).
+const VIS = 0, GHOST = 1, SEL = 2, HOVER = 3;
+
+/** Colours travel as packed 0xRRGGBB integers, -1 = no override. */
+export const packRgb = ([r, g, b]) => (r << 16) | (g << 8) | b;
+export const unpackRgb = (p) => [(p >> 16) & 255, (p >> 8) & 255, p & 255];
 
 /** One loaded IFC file. Element state lives in two RGBA8 textures read by the shaders. */
 export class Model {
@@ -70,28 +77,25 @@ export class Model {
     for (let i = 0; i < this.count; i++) {
       const el = els[i];
       let p = el.parent;
-      const aggregates = [];
-      // an opening's parent is the element it voids: that is not an aggregate
-      const opening = el.supers.includes('IfcFeatureElementSubtraction');
+      const ancestors = []; // non-spatial ancestors, outermost first
       while (p >= 0) {
         const pe = els[p];
         if (pe.cls === 'IfcBuildingStorey' && el.storey === undefined) el.storey = p;
         if (pe.cls === 'IfcBuilding' && el.building === undefined) el.building = p;
         if (pe.cls === 'IfcSite' && el.site === undefined) el.site = p;
         if (pe.cls === 'IfcSpace' && el.space === undefined) el.space = p;
-        if (!opening && !SPATIAL.has(pe.cls) && pe.cls !== 'IfcSpace') aggregates.unshift(pe);
+        if (!SPATIAL.has(pe.cls)) ancestors.unshift(pe);
         p = pe.parent;
       }
-      el.category = categoryOf(el, aggregates);
+      el.category = categoryOf(el, ancestors);
     }
   }
 
   resetState() {
-    const f = this.flags;
     for (let i = 0; i < this.count; i++) {
       const el = this.elements[i];
-      f[i * 4] = HIDDEN_BY_DEFAULT.has(el.cls) || el.supers.includes('IfcOpeningElement') ? 0 : 255;
-      f[i * 4 + 1] = 0;
+      this.setVisible(i, !isGated(el) && !isAuxiliary(el));
+      this.setGhost(i, false);
     }
     this.colors.fill(0);
     this.touch();
@@ -102,8 +106,42 @@ export class Model {
     this.colorTex.needsUpdate = true;
   }
 
-  isVisible(i) { return this.flags[i * 4] > 0; }
-  isGhost(i) { return this.flags[i * 4 + 1] > 0; }
+  // --- element state (only this class knows the texel layout) ---------------------
+  isVisible(i) { return this.flags[i * 4 + VIS] > 0; }
+  isGhost(i) { return this.flags[i * 4 + GHOST] > 0; }
+  setVisible(i, v) { this.flags[i * 4 + VIS] = v ? 255 : 0; }
+  setGhost(i, v) { this.flags[i * 4 + GHOST] = v ? 255 : 0; }
+  setSelected(i, v) { this.flags[i * 4 + SEL] = v ? 255 : 0; }
+  setHover(i, v) { this.flags[i * 4 + HOVER] = v ? 255 : 0; this.flagTex.needsUpdate = true; }
+
+  /** Override colour of an element as packed RGB, -1 = none. */
+  colorOf(i) {
+    const c = this.colors;
+    return c[i * 4 + 3] ? (c[i * 4] << 16) | (c[i * 4 + 1] << 8) | c[i * 4 + 2] : -1;
+  }
+
+  setColor(i, p) {
+    const c = this.colors;
+    if (p < 0) { c[i * 4 + 3] = 0; return; }
+    c[i * 4] = (p >> 16) & 255; c[i * 4 + 1] = (p >> 8) & 255; c[i * 4 + 2] = p & 255; c[i * 4 + 3] = 255;
+  }
+
+  /** Visibility + transparency as one byte per element, colours only when any element has one. */
+  packState() {
+    const bits = new Uint8Array(this.count);
+    let colored = false;
+    for (let i = 0; i < this.count; i++) {
+      bits[i] = (this.isVisible(i) ? 1 : 0) | (this.isGhost(i) ? 2 : 0);
+      if (this.colors[i * 4 + 3]) colored = true;
+    }
+    return { bits, colors: colored ? this.colors.slice(0, this.count * 4) : null };
+  }
+
+  unpackState({ bits, colors }) {
+    for (let i = 0; i < this.count; i++) { this.setVisible(i, bits[i] & 1); this.setGhost(i, bits[i] & 2); }
+    if (colors) this.colors.set(colors); else this.colors.fill(0);
+    this.touch();
+  }
 
   buildMeshes() {
     this.chunks.forEach((c, ci) => {

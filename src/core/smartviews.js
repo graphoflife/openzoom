@@ -1,5 +1,6 @@
-import { zoomTypeToClasses } from './ifc-classes.js';
-import { getValue, valueText } from './props.js';
+import { zoomTypeToClasses, isGated, namesGatedType } from './ifc-classes.js';
+import { getValue, valueText, roundNumber } from './props.js';
+import { packRgb } from './models.js';
 import { t } from '../i18n.js';
 
 // Smart views: ordered rule lists that build up the visible set, colours and
@@ -74,9 +75,10 @@ function testOne(cond, v) {
     case 'LogicalUnknown': return lower(v) === 'unknown' || lower(v) === 'u';
     default: break;
   }
-  const a = toNum(v), b = toNum(want);
+  // compare at the precision values are shown with (valueText)
+  const a = roundNumber(toNum(v)), b = roundNumber(toNum(want));
   if (!Number.isFinite(a) || !Number.isFinite(b)) return cond.type === 'NotEquals';
-  const eps = 1e-9 * Math.max(1, Math.abs(a), Math.abs(b));
+  const eps = 1e-12 * Math.max(1, Math.abs(a), Math.abs(b));
   switch (cond.type) {
     case 'Equals': return Math.abs(a - b) <= eps;
     case 'NotEquals': return Math.abs(a - b) > eps;
@@ -102,9 +104,6 @@ export function testCondition(cond, v) {
   return testOne(cond, v);
 }
 
-// Element types that are only shown when a rule names them (or their Alt+S / Alt+O toggle is on).
-const HIDDEN_TYPES = ['IfcSpace', 'IfcOpeningElement', 'IfcFeatureElementSubtraction'];
-
 function makePredicate(rule) {
   const classes = zoomTypeToClasses(rule.ifcType);
   const prop = rule.property || {};
@@ -114,18 +113,18 @@ function makePredicate(rule) {
     if (noProp) return true;
     return testCondition(rule.condition || {}, getValue(model, i, prop));
   };
-  pred.explicit = (el) => !!classes && classes.some((c) => HIDDEN_TYPES.includes(c) && el.supers.includes(c));
+  // spaces and openings only match a rule that names their type (unless their Alt toggle is on)
+  pred.explicit = (el) => namesGatedType(el, classes);
   return pred;
 }
-
-const hiddenChild = (el) => el.cls === 'IfcSpace' || el.supers.includes('IfcOpeningElement');
 
 /**
  * Evaluate a smart view against all models. Matches propagate to contained and
  * aggregated elements; `skipChild(el)` excludes children (default: spaces, openings).
- * @returns {{perModel: Array<{model, vis, ghost, color}>, legend: Array}}
+ * @returns {{perModel: Array<{model, vis, ghost, color}>, legend: {title, entries} | null}}
+ *   perModel is a view for ElementState.applyView, legend entries list gids.
  */
-export function evaluate(view, models, skipChild = hiddenChild) {
+export function evaluate(view, models, skipChild = isGated) {
   const W = models.map((m) => ({ model: m, vis: new Uint8Array(m.count), ghost: new Uint8Array(m.count), color: new Int32Array(m.count).fill(-1) }));
   const legend = [];
   let chain = [];
@@ -136,7 +135,7 @@ export function evaluate(view, models, skipChild = hiddenChild) {
     const preds = [...chain, pred];
     chain = [];
     const rgb = [rule.action.r ?? 255, rule.action.g ?? 0, rule.action.b ?? 0];
-    const packed = (rgb[0] << 16) | (rgb[1] << 8) | rgb[2];
+    const packed = packRgb(rgb);
     const auto = type === 'SetAutoColored' ? new Map() : null;
     const colored = [];
     for (const w of W) {
@@ -171,24 +170,24 @@ export function evaluate(view, models, skipChild = hiddenChild) {
           default: break;
         }
         // only elements that actually got the colour (Set* skips hidden ones)
-        if (h && w.vis[i] && m.hasGeom[i] && COLOR_ACTIONS.has(type)) colored.push([w, i]);
+        if (h && w.vis[i] && m.hasGeom[i] && COLOR_ACTIONS.has(type)) colored.push(m.base + i);
       }
     }
     if (COLOR_ACTIONS.has(type)) {
-      legend.push({ color: rgb, label: ruleLabel(rule), count: colored.length, items: colored });
+      legend.push({ color: rgb, label: ruleLabel(rule), count: colored.length, gids: colored });
     }
     if (auto) {
       const keys = [...auto.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
       keys.forEach((key, k) => {
         const c = paletteColor(k);
         const entry = auto.get(key);
-        const p = (c[0] << 16) | (c[1] << 8) | c[2];
+        const p = packRgb(c);
         for (const [w, i] of entry.items) w.color[i] = p;
-        legend.push({ color: c, label: key, count: entry.items.length, items: entry.items, takeoff: takeoff(view, entry.items) });
+        legend.push({ color: c, label: key, count: entry.items.length, gids: entry.items.map(([x, i]) => x.model.base + i), takeoff: takeoff(view, entry.items) });
       });
     }
   }
-  return { perModel: W, legend };
+  return { perModel: W, legend: legend.length ? { title: view.title, entries: legend } : null };
 }
 
 function takeoff(view, items) {
@@ -217,25 +216,6 @@ export function ruleLabel(rule) {
   if (c.type && !all) parts.push(t(`cond.${c.type}`));
   if (c.value && !NO_VALUE_CONDITIONS.has(c.type)) parts.push(c.value);
   return parts.filter(Boolean).join(' ') || 'Regel';
-}
-
-/** Write an evaluation result into the element state (with undo). */
-export function applyResult(app, result) {
-  const st = app.state;
-  st.record();
-  for (const w of result.perModel) {
-    const m = w.model;
-    const f = m.flags, c = m.colors;
-    for (let i = 0; i < m.count; i++) {
-      f[i * 4] = w.vis[i] ? 255 : 0;
-      f[i * 4 + 1] = w.ghost[i] ? 255 : 0;
-      const col = w.color[i];
-      if (col >= 0) { c[i * 4] = (col >> 16) & 255; c[i * 4 + 1] = (col >> 8) & 255; c[i * 4 + 2] = col & 255; c[i * 4 + 3] = 255; }
-      else c[i * 4 + 3] = 0;
-    }
-  }
-  st.legend = result.legend.length ? result.legend : null;
-  st.changed();
 }
 
 // --- rule construction helpers ---------------------------------------------------

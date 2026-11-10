@@ -1,7 +1,7 @@
 import { h, showMenu, clear } from './dom.js';
 import { t, getLanguage } from '../i18n.js';
 import { classLabel } from '../core/ifc-classes.js';
-import { propertyGroups, getValue, valueText } from '../core/props.js';
+import { propertyGroups, getValue, valueText, fixedProperty } from '../core/props.js';
 import { rule, uuid } from '../core/smartviews.js';
 
 const MULTI_LIMIT = 400;
@@ -151,17 +151,9 @@ export class PropertiesPanel {
   }
 }
 
-const NAME_DE = {
-  Name: 'Name', Description: 'Beschreibung', GUID: 'GUID', IfcType: 'Elementtyp', IfcEntity: 'IFC-Klasse', Type: 'Typ', 'Object Type': 'Objekttyp',
-  'Predefined Type': 'Vordefinierter Typ', Tag: 'Kennung (Tag)', Model: 'Modell', Classification: 'Klassifikation', System: 'System', Volume: 'Volumen',
-  Area: 'Oberfläche', Height: 'Höhe', 'Bottom Elevation': 'UK (absolut)', 'Top Elevation': 'OK (absolut)', Elevation: 'Höhe (Elevation)', 'Long Name': 'Langname',
-  Site: 'Grundstück', Building: 'Gebäude', 'Building Storey': 'Geschoss', 'Storey Elevation': 'Geschosshöhe', Space: 'Raum', Material: 'Material',
-  'Material Layer Set': 'Schichtaufbau', 'File Name': 'Dateiname', Schema: 'Schema', Application: 'Anwendung', Author: 'Autor', Organization: 'Organisation', Phase: 'Phase',
-};
-
 export function displayName(name, type) {
-  if (getLanguage() === 'de' && type !== 'PropertySet' && NAME_DE[name]) return NAME_DE[name];
-  return name;
+  const label = getLanguage() === 'de' ? fixedProperty(type, name)?.de : null;
+  return label || name;
 }
 
 function groupLabel(k) {

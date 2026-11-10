@@ -74,8 +74,10 @@ export function classLabel(cls, lang = 'de') {
 }
 
 // Component categories for the "Show/Hide components" menu (Alt+<key>).
+// Gated categories (spaces, openings) stay hidden, also below a shown parent, until
+// their Alt toggle reveals them or a smart view rule names their type, like in Zoom.
 export const CATEGORIES = [
-  { key: 'spaces', accel: 'S', classes: ['IfcSpace'] },
+  { key: 'spaces', accel: 'S', classes: ['IfcSpace'], gated: true },
   { key: 'walls', accel: 'W', classes: ['IfcWall', 'IfcCurtainWall'] },
   { key: 'slabs', accel: 'L', classes: ['IfcSlab'] },
   { key: 'roofs', accel: 'R', classes: ['IfcRoof'] },
@@ -85,17 +87,40 @@ export const CATEGORIES = [
   { key: 'stairs', accel: 'T', classes: ['IfcStair', 'IfcStairFlight', 'IfcRamp', 'IfcRampFlight'] },
   { key: 'doors', accel: 'D', classes: ['IfcDoor'] },
   { key: 'windows', accel: 'I', classes: ['IfcWindow'] },
-  { key: 'openings', accel: 'O', classes: ['IfcOpeningElement'] },
+  { key: 'openings', accel: 'O', classes: ['IfcFeatureElementSubtraction'], gated: true },
   { key: 'mep', accel: 'M', classes: ['IfcDistributionElement', 'IfcFlowSegment', 'IfcFlowFitting', 'IfcFlowTerminal', 'IfcFlowController', 'IfcEnergyConversionDevice', 'IfcFlowMovingDevice', 'IfcFlowStorageDevice', 'IfcFlowTreatmentDevice'] },
 ];
 
-/** Category key of an element, preferring the aggregate it belongs to (roof slab -> roofs). */
-export function categoryOf(el, aggregateAncestors = []) {
-  for (const a of aggregateAncestors) {
+const GATED = new Map(CATEGORIES.filter((c) => c.gated).map((c) => [c.key, c]));
+
+/**
+ * Category key of an element, preferring the outermost aggregate it belongs to
+ * (roof slab -> roofs). Spaces and openings keep their own category, and they
+ * never pass theirs on (furniture in a space, an opening's host wall).
+ */
+export function categoryOf(el, ancestors = []) {
+  const own = matchCategory(el.supers, el.predef);
+  if (GATED.has(own)) return own;
+  for (const a of ancestors) {
     const k = matchCategory(a.supers, a.predef);
-    if (k) return k;
+    if (k && !GATED.has(k)) return k;
   }
-  return matchCategory(el.supers, el.predef);
+  return own;
+}
+
+/** Element of a gated category (space, opening). */
+export const isGated = (el) => GATED.has(el.category);
+
+/**
+ * True when one of `classes` names el's gated category or a subtype of it
+ * ("Opening", "Space"), not merely a general class above it ("Element").
+ * `supers` runs from the element's own class to the most general one.
+ */
+export function namesGatedType(el, classes) {
+  const cat = GATED.get(el.category);
+  if (!cat || !classes) return false;
+  const root = Math.max(...cat.classes.map((c) => el.supers.indexOf(c)));
+  return classes.some((c) => { const k = el.supers.indexOf(c); return k >= 0 && k <= root; });
 }
 
 function matchCategory(supers, predef) {
@@ -105,8 +130,9 @@ function matchCategory(supers, predef) {
   return null;
 }
 
-/** Classes hidden when a model is loaded (like BIMcollab Zoom). */
-export const HIDDEN_BY_DEFAULT = new Set(['IfcSpace', 'IfcOpeningElement', 'IfcOpeningStandardCase', 'IfcVirtualElement', 'IfcAnnotation']);
+/** Auxiliary objects: hidden when a model is loaded and by "show all", never clashed. */
+const AUXILIARY = ['IfcVirtualElement', 'IfcAnnotation'];
+export const isAuxiliary = (el) => AUXILIARY.some((c) => el.supers.includes(c));
 
 export const SPATIAL = new Set(['IfcProject', 'IfcSite', 'IfcBuilding', 'IfcBuildingStorey', 'IfcFacility', 'IfcFacilityPart', 'IfcBridge', 'IfcRoad', 'IfcRailway']);
 

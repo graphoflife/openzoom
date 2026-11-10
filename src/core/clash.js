@@ -1,9 +1,11 @@
 import * as THREE from 'three';
 import { elementGeometry, elementDistance } from './elementgeom.js';
 import { evaluate, uuid } from './smartviews.js';
+import { SPATIAL, isGated, isAuxiliary } from './ifc-classes.js';
 
 const IDENTITY = new THREE.Matrix4();
-const NEVER = ['IfcSpace', 'IfcOpeningElement', 'IfcVirtualElement', 'IfcAnnotation', 'IfcGrid', 'IfcSite', 'IfcBuilding', 'IfcBuildingStorey', 'IfcZone'];
+const NOT_PHYSICAL = ['IfcGrid', 'IfcZone'];
+const neverClashes = (el) => isGated(el) || isAuxiliary(el) || SPATIAL.has(el.cls) || NOT_PHYSICAL.some((c) => el.supers.includes(c));
 
 /**
  * Clash detection between two element sets.
@@ -41,7 +43,7 @@ export class ClashManager extends EventTarget {
   /** Resolve a set definition to gids of elements with geometry. */
   resolveSet(set) {
     const M = this.app.models;
-    const ok = (m, i, el) => m.hasGeom[i] && m.visible && !NEVER.some((c) => el.supers.includes(c));
+    const ok = (m, i, el) => m.hasGeom[i] && m.visible && !neverClashes(el);
     switch (set.kind) {
       case 'all': return M.allGids(ok);
       case 'model': return M.allGids((m, i, el) => ok(m, i, el) && (set.value || []).includes(m.name));

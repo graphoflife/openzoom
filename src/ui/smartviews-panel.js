@@ -2,7 +2,7 @@ import { h, showMenu, clear, dialog, promptDialog, confirmDialog, download, pick
 import { icon } from './icons.js';
 import { t } from '../i18n.js';
 import { ZOOM_TYPES, classToZoomType } from '../core/ifc-classes.js';
-import { ACTIONS, CONDITIONS, NO_VALUE_CONDITIONS, exportBcsv, importBcsv, rule, uuid, evaluate, applyResult } from '../core/smartviews.js';
+import { ACTIONS, CONDITIONS, NO_VALUE_CONDITIONS, exportBcsv, importBcsv, rule, uuid, evaluate } from '../core/smartviews.js';
 import { openPropertyPicker, openValuePicker, propertyText, closePicker } from './property-picker.js';
 
 /** Smart view sets tree with apply-on-click, editor, .bcsv import/export. */
@@ -208,7 +208,14 @@ export class SmartViewsPanel {
         h('label', t('sv.description'), descInput),
         h('label', t('sv.takeoff'), h('div.row', tkBtn, tkClear, tkOp))));
     const buttons = [
-      { label: t('sv.preview'), run: () => { applyResult(this.app, evaluate(collect(), this.app.models.models, this.app.state.skipChild)); this.app.legendTitle = draft.title; this.app.renderLegend(); return false; } },
+      {
+        label: t('sv.preview'),
+        run: () => {
+          const res = evaluate(collect(), this.app.models.models, this.app.state.skipChild);
+          this.app.state.applyView(res.perModel, { legend: res.legend });
+          return false;
+        },
+      },
     ];
     if (!readonly) {
       buttons.push({
